@@ -226,32 +226,18 @@ QRCode.toCanvas(qrCanvas, playURL, {
   })
   .catch((err) => console.error('[screen] QR generation failed', err));
 
-// --- Fade cycle: 6s visible, 8s hidden — but only when the chamber is empty.
-// As soon as any slot is connected the overlay disappears so the cabinet has
-// the spotlight; it returns once the room empties out again.
-const VISIBLE_MS = 6000;
-const HIDDEN_MS = 8000;
+// --- Fade cycle: visible briefly, hidden the rest, on a 10s period.
+// We keep cycling even when slots are occupied so latecomers can scan the QR
+// and join while a game is already running.
+const VISIBLE_MS = 3000;
+const HIDDEN_MS = 7000;
 let visible = false;
 function tickOverlay() {
-  if (connectedCount > 0) {
-    visible = false;
-    overlay.style.opacity = '0';
-  } else {
-    visible = !visible;
-    overlay.style.opacity = visible ? '1' : '0';
-  }
+  visible = !visible;
+  overlay.style.opacity = visible ? '1' : '0';
   setTimeout(tickOverlay, visible ? VISIBLE_MS : HIDDEN_MS);
 }
 setTimeout(tickOverlay, 1500);
-
-// Pre-empt the cycle: hide instantly when someone joins, show next cycle
-// once the room is empty again.
-onConnectedCountChange = (n) => {
-  if (n > 0) {
-    visible = false;
-    overlay.style.opacity = '0';
-  }
-};
 
 console.log('[screen] mounted', { playURL });
 
