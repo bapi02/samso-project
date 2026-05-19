@@ -66,6 +66,8 @@ const chamber = createChamber({ width: STAGE_W, height: STAGE_H, container: cham
 let allSlots = {};
 const slotInputs = {};      // slot -> { left, right, up, down }
 const extractingSlots = new Set();
+let connectedCount = 0;
+let onConnectedCountChange = null; // wired up after overlay is built
 
 if (isFirebaseConfigured()) {
   subscribeAllSlots((slots) => {
@@ -82,6 +84,10 @@ if (isFirebaseConfigured()) {
     }
     for (const s of chamber.activeSlots()) {
       if (!connected.has(s)) chamber.removeClaw(s);
+    }
+    if (connected.size !== connectedCount) {
+      connectedCount = connected.size;
+      if (onConnectedCountChange) onConnectedCountChange(connectedCount);
     }
 
     // 2) Update each slot's input snapshot.
@@ -161,11 +167,11 @@ overlay.style.cssText = `
 `;
 stage.appendChild(overlay);
 
-// --- Dialog bubbles (left side, vertically stacked near upper-mid)
+// --- Dialog bubbles (left side, lowered into the rock-pile band)
 const bubbleStack = document.createElement('div');
 bubbleStack.style.cssText = `
-  position:absolute; left:60px; top:880px;
-  display:flex; flex-direction:column; gap:32px;
+  position:absolute; left:60px; top:1500px;
+  display:flex; flex-direction:column; gap:28px;
   width:380px;
 `;
 overlay.appendChild(bubbleStack);
@@ -177,12 +183,13 @@ const bubble2 = makeBubble(
 bubbleStack.appendChild(bubble1);
 bubbleStack.appendChild(bubble2);
 
-// --- QR card (right side, upper-mid)
+// --- QR card (right side, aligned with the lowered dialog bubbles)
 const QR_CARD_SIZE = 380;
 const QR_CARD_PAD = 22;
+const QR_TOP = 1500;
 const qrCard = document.createElement('div');
 qrCard.style.cssText = `
-  position:absolute; right:60px; top:880px;
+  position:absolute; right:60px; top:${QR_TOP}px;
   box-sizing:border-box;
   width:${QR_CARD_SIZE}px; height:${QR_CARD_SIZE}px; padding:${QR_CARD_PAD}px;
   background:#ffffff; border-radius:18px;
@@ -197,7 +204,7 @@ overlay.appendChild(qrCard);
 
 const qrCaption = document.createElement('div');
 qrCaption.style.cssText = `
-  position:absolute; right:60px; top:${880 + QR_CARD_SIZE + 24}px;
+  position:absolute; right:60px; top:${QR_TOP + QR_CARD_SIZE + 24}px;
   width:${QR_CARD_SIZE}px; text-align:center;
   font-size:22px; letter-spacing:6px; color:#9be8ff;
   text-shadow:0 0 12px rgba(77,208,255,0.6);
@@ -219,17 +226,32 @@ QRCode.toCanvas(qrCanvas, playURL, {
   })
   .catch((err) => console.error('[screen] QR generation failed', err));
 
-// --- Fade cycle: 6s visible, 8s hidden
+// --- Fade cycle: 6s visible, 8s hidden — but only when the chamber is empty.
+// As soon as any slot is connected the overlay disappears so the cabinet has
+// the spotlight; it returns once the room empties out again.
 const VISIBLE_MS = 6000;
 const HIDDEN_MS = 8000;
 let visible = false;
 function tickOverlay() {
-  visible = !visible;
-  overlay.style.opacity = visible ? '1' : '0';
+  if (connectedCount > 0) {
+    visible = false;
+    overlay.style.opacity = '0';
+  } else {
+    visible = !visible;
+    overlay.style.opacity = visible ? '1' : '0';
+  }
   setTimeout(tickOverlay, visible ? VISIBLE_MS : HIDDEN_MS);
 }
-// Show overlay first thing so the user immediately sees the QR.
 setTimeout(tickOverlay, 1500);
+
+// Pre-empt the cycle: hide instantly when someone joins, show next cycle
+// once the room is empty again.
+onConnectedCountChange = (n) => {
+  if (n > 0) {
+    visible = false;
+    overlay.style.opacity = '0';
+  }
+};
 
 console.log('[screen] mounted', { playURL });
 

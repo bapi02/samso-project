@@ -238,24 +238,16 @@ export function createChamber({ width, height, container }) {
   outerOutline.position.set(0, totalH / 2, 0);
   cabinetGroup.add(outerOutline);
 
-  // ---- NEXTIS sign (canvas-textured plane on the top block face) -------
-  const sign = buildSign('NEXTIS LAB', 1024, 256);
-  const signMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(CAB.innerW * 0.62, CAB.topH * 0.65),
-    new THREE.MeshBasicMaterial({ map: sign.texture, transparent: true })
-  );
-  // Sign sits ON the front face of the top block — push it forward of the
-  // side-panel depth (sides extend to z = innerD/2 + 0.1).
+  // ---- NEXIS logo sign (image plane on the top block face) -------------
   const signZ = CAB.innerD / 2 + 0.23;
-  signMesh.position.set(0, innerTopY + CAB.topH * 0.55, signZ + 0.02);
-  cabinetGroup.add(signMesh);
+  const signCenterY = innerTopY + CAB.topH * 0.55;
 
-  // Sign frame (dark plate behind the text, sits flush on the top block)
+  // Dark backplate so the white logo PNG reads against the cabinet glow.
   const signFrame = new THREE.Mesh(
     new THREE.PlaneGeometry(CAB.innerW * 0.66, CAB.topH * 0.72),
     new THREE.MeshBasicMaterial({ color: 0x0a1428 })
   );
-  signFrame.position.set(0, innerTopY + CAB.topH * 0.55, signZ);
+  signFrame.position.set(0, signCenterY, signZ);
   cabinetGroup.add(signFrame);
 
   const signOutlineEdges = new THREE.EdgesGeometry(
@@ -265,8 +257,39 @@ export function createChamber({ width, height, container }) {
     signOutlineEdges,
     new THREE.LineBasicMaterial({ color: PALETTE.neonCyan, transparent: true, opacity: 0.9 })
   );
-  signOutline.position.set(0, innerTopY + CAB.topH * 0.55, signZ + 0.01);
+  signOutline.position.set(0, signCenterY, signZ + 0.01);
   cabinetGroup.add(signOutline);
+
+  // Logo plane (texture loaded async). Sized to fit inside the frame with
+  // a margin; aspect adjusted after the image loads so it doesn't distort.
+  const logoMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 });
+  const signMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(CAB.innerW * 0.52, CAB.topH * 0.5),
+    logoMat
+  );
+  signMesh.position.set(0, signCenterY, signZ + 0.02);
+  cabinetGroup.add(signMesh);
+
+  new THREE.TextureLoader().load('/assets/brand/nexis-logo-white.png', (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    logoMat.map = tex;
+    logoMat.opacity = 1;
+    logoMat.needsUpdate = true;
+
+    // Match the plane to the image aspect so the logo isn't squished.
+    const aspect = tex.image.width / tex.image.height;
+    const maxW = CAB.innerW * 0.56;
+    const maxH = CAB.topH * 0.55;
+    let w = maxW;
+    let h = maxW / aspect;
+    if (h > maxH) {
+      h = maxH;
+      w = maxH * aspect;
+    }
+    signMesh.geometry.dispose();
+    signMesh.geometry = new THREE.PlaneGeometry(w, h);
+  });
 
   // ---- Base control panel detail (small screen + 2 buttons) -----------
   const screen = new THREE.Mesh(
@@ -425,9 +448,9 @@ export function createChamber({ width, height, container }) {
     pulley.position.set(layout.idleX, cableTopY, 0);
     cabinetGroup.add(pulley);
 
-    const ROAM = 0.85;
-    const xMin = Math.max(-(CAB.innerW / 2) + c.R + 0.2, layout.idleX - ROAM);
-    const xMax = Math.min(+(CAB.innerW / 2) - c.R - 0.2, layout.idleX + ROAM);
+    // Full chamber width — claws can roam freely and visually overlap.
+    const xMin = -(CAB.innerW / 2) + c.R + 0.2;
+    const xMax = +(CAB.innerW / 2) - c.R - 0.2;
 
     claws[slot] = {
       slot,

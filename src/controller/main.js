@@ -89,7 +89,7 @@ dpad.appendChild(btnUp.el);
 dpad.appendChild(btnLeft.el);
 dpad.appendChild(btnRight.el);
 
-// Center decorative hex hub
+// Center decorative hex hub (decoration only — let touches reach the buttons)
 const hubHex = document.createElement('div');
 hubHex.style.cssText = `
   position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
@@ -97,6 +97,7 @@ hubHex.style.cssText = `
   clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
   background:rgba(77,208,255,0.10);
   border: 1px solid rgba(77,208,255,0.35);
+  pointer-events:none;
 `;
 dpad.appendChild(hubHex);
 
@@ -478,13 +479,14 @@ function makeActionButton(label) {
   const wrap = document.createElement('div');
   wrap.style.cssText = `position:relative; width:148px; height:148px; display:flex; align-items:center; justify-content:center;`;
 
-  // Outer hex bezel
+  // Outer hex bezel (decoration only — must NOT intercept touches)
   const bezel = document.createElement('div');
   bezel.style.cssText = `
     position:absolute; inset:0;
     clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
     background:rgba(77,208,255,0.08);
     border:1px solid rgba(77,208,255,0.45);
+    pointer-events:none;
   `;
   wrap.appendChild(bezel);
 
@@ -493,6 +495,7 @@ function makeActionButton(label) {
   ticks.style.cssText = `
     position:absolute; inset:14px;
     font-size:9px; letter-spacing:2px; color:#9be8ff; opacity:0.55;
+    pointer-events:none;
   `;
   ticks.innerHTML = `
     <div style="position:absolute; top:0; left:50%; transform:translateX(-50%);">${label}</div>
@@ -501,6 +504,7 @@ function makeActionButton(label) {
 
   const el = document.createElement('button');
   el.style.cssText = `
+    position:relative; z-index:2;
     width:96px; height:96px; border-radius:50%;
     background: radial-gradient(circle at 50% 35%, rgba(77,208,255,0.55), rgba(77,208,255,0.15) 60%, rgba(77,208,255,0.02) 100%), rgba(10,26,52,0.7);
     border:1.5px solid rgba(77,208,255,0.7);
@@ -552,7 +556,7 @@ function makeActionButton(label) {
 
 function makeCornerBrackets() {
   const w = document.createElement('div');
-  w.style.cssText = `position:absolute; inset:14px; pointer-events:none;`;
+  w.style.cssText = `position:absolute; inset:14px; pointer-events:none; z-index:0;`;
   ['tl','tr','bl','br'].forEach((corner) => {
     const c = document.createElement('div');
     c.style.cssText = `
