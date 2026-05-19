@@ -182,10 +182,11 @@ resultOverlay.style.cssText = `
 root.appendChild(resultOverlay);
 
 // ---- State machine -----------------------------------------------------
+// connecting → idle → extracting → result. 'full' if 4 slots are taken at
+// claim time; 'disconnected' on hard error.
 const state = {
-  status: 'connecting', // connecting | queued | idle | extracting | result | full | disconnected
+  status: 'connecting',
   slot: 0,
-  isActive: false,      // is this controller the one driving the claw?
   result: null,
 };
 
@@ -217,11 +218,6 @@ function render() {
       centerStatus.textContent = 'WAITING';
       centerTitle.textContent = '대기 중';
       centerSub.textContent = '잠시 후 자동으로 입장됩니다';
-      break;
-    case 'queued':
-      centerStatus.textContent = `SLOT ${state.slot}`;
-      centerTitle.textContent = '내 차례 대기';
-      centerSub.textContent = '앞 사용자가 끝나면 자동으로 시작됩니다';
       break;
     case 'idle':
       centerStatus.textContent = 'CONTROL · ACTIVE';
@@ -648,8 +644,8 @@ async function boot() {
   await setupSlotDisconnect(slot);
 
   // Parallel multi-claw model: every connected slot is active in its own
-  // lane. We go straight to 'idle' on claim — no queue.
-  setState({ slot, isActive: true, status: 'idle' });
+  // lane. Go straight to 'idle' on claim — no queue.
+  setState({ slot, status: 'idle' });
 
   unsubscribeSlot = subscribeSlot(slot, async (slotData) => {
     if (!slotData) return;

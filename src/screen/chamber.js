@@ -674,7 +674,12 @@ export function createChamber({ width, height, container }) {
         c.group.position.z += (c.targetZ - c.group.position.z) * Math.min(1, 10 * dt);
         c.group.position.y = IDLE_Y;
       }
-      // Cable from this claw's pulley to its shackle (offset above scoop top).
+      // Gantry rail model: pulley slides horizontally along the chamber roof
+      // tracking the claw, so the cable hangs straight down (no diagonal sway).
+      c.pulley.position.x = c.group.position.x;
+      c.pulley.position.z = c.group.position.z;
+      c.pulleyPos.x = c.group.position.x;
+      c.pulleyPos.z = c.group.position.z;
       const shackleY = c.group.position.y + 0.34;
       setCableBetween(
         c.cable,
