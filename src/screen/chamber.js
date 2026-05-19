@@ -18,7 +18,7 @@ const PALETTE = {
 
 // World-unit dimensions of the cabinet
 const CAB = {
-  innerW: 4.6,   // x — inner chamber width
+  innerW: 6.0,   // x — wider to fit 4 simultaneous claws side-by-side
   innerD: 2.6,   // z — inner depth
   innerH: 8.4,   // y — inner height (rocks + airspace above)
   wallT: 0.18,   // glass thickness
@@ -50,10 +50,10 @@ export function createChamber({ width, height, container }) {
   const aspect = width / height;
   const fov = aspect < 0.5 ? 48 : 36;
   const camera = new THREE.PerspectiveCamera(fov, aspect, 0.1, 100);
-  // Frame the whole cabinet (totalH ≈ 10.9, width ≈ 5.45). For portrait
-  // (aspect ~0.4) we sit further back so the side walls aren't clipped.
+  // Frame the whole cabinet. Wider innerW (6.0) needs more distance so all
+  // 4 claws stay in frame at portrait aspect.
   const cabCenterY = (CAB.baseH + CAB.innerH + CAB.topH) / 2;
-  const camDist = aspect < 0.5 ? 18 : 12;
+  const camDist = aspect < 0.5 ? 22 : 14;
   camera.position.set(0, cabCenterY + 0.6, camDist);
   camera.lookAt(0, cabCenterY - 0.4, 0);
 
@@ -365,75 +365,21 @@ export function createChamber({ width, height, container }) {
     r.mesh.quaternion.copy(r.body.quaternion);
   }
 
-  // ---- Claw mechanism (idle, hanging above the pile) -------------------
-  const claw = buildClaw();
-  claw.group.position.set(0, innerTopY - 1.4, 0);
-  cabinetGroup.add(claw.group);
-
-  // Cable from top of chamber to claw shackle — thicker KIA-blue rope.
-  const cableTopY = innerTopY - 0.1;
-  const clawShackleY = innerTopY - 1.4 + 0.34;
-  const cableLen = cableTopY - clawShackleY;
-  const cable = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.045, 0.045, cableLen, 12),
-    new THREE.MeshStandardMaterial({
-      color: 0x2c7fff,
-      roughness: 0.55,
-      metalness: 0.3,
-      emissive: 0x0a2a66,
-      emissiveIntensity: 0.1,
-    })
-  );
-  cable.position.set(0, clawShackleY + cableLen / 2, 0);
-  cabinetGroup.add(cable);
-
-  // Cable pulley at the top (where it enters the ceiling housing)
-  const pulley = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.18, 0.18, 0.18, 24),
-    new THREE.MeshStandardMaterial({ color: 0x1a2a4a, roughness: 0.4, metalness: 0.7 })
-  );
-  pulley.rotation.z = Math.PI / 2;
-  pulley.position.set(0, cableTopY, 0);
-  cabinetGroup.add(pulley);
-
-  // ---- Real-time claw control (driven from controller inputs) ----------
-  // Bounds keep the claw inside the chamber walls with margin for the scoop.
-  const CLAW_X_MIN = -(CAB.innerW / 2) + claw.R + 0.15;
-  const CLAW_X_MAX = +(CAB.innerW / 2) - claw.R - 0.15;
-  const CLAW_Z_MIN = -(CAB.innerD / 2) + claw.R + 0.15;
-  const CLAW_Z_MAX = +(CAB.innerD / 2) - claw.R - 0.15;
-  let clawTargetX = 0;
-  let clawTargetZ = 0;
-
-  function setClawTarget(x, z) {
-    clawTargetX = Math.max(CLAW_X_MIN, Math.min(CLAW_X_MAX, x));
-    clawTargetZ = Math.max(CLAW_Z_MIN, Math.min(CLAW_Z_MAX, z));
-  }
-
-  // Apply a velocity-based nudge from held inputs. `dt` in seconds.
-  const CLAW_SPEED = 3.2; // chamber units per second
-  function applyInput({ left, right, up, down }, dt) {
-    if (left)  clawTargetX -= CLAW_SPEED * dt;
-    if (right) clawTargetX += CLAW_SPEED * dt;
-    if (up)    clawTargetZ -= CLAW_SPEED * dt; // toward back of chamber
-    if (down)  clawTargetZ += CLAW_SPEED * dt;
-    clawTargetX = Math.max(CLAW_X_MIN, Math.min(CLAW_X_MAX, clawTargetX));
-    clawTargetZ = Math.max(CLAW_Z_MIN, Math.min(CLAW_Z_MAX, clawTargetZ));
-  }
-
-  function getClawPosition() {
-    return {
-      x: claw.group.position.x,
-      y: claw.group.position.y,
-      z: claw.group.position.z,
-    };
-  }
-
-  // ---- Extract animation state machine ---------------------------------
-  // Idle Y: where the claw rests. Grab Y: just above the pile top.
+  // ---- 4 simultaneous claws, one per slot -------------------------------
+  // Each slot has its own color, idle X position, X-bound range, cable +
+  // pulley, target X/Z, and (when active) an extract animation state.
   const IDLE_Y = innerTopY - 1.4;
   const GRAB_Y = innerFloorY + 2.6;
   const DELIVER_Y = innerTopY - 0.4; // up into the funnel
+  const cableTopY = innerTopY - 0.1;
+
+  const SLOT_LAYOUT = {
+    1: { idleX: -2.0, color: 0x4dd0ff, dark: 0x174ba8 }, // cyan
+    2: { idleX: -0.7, color: 0xd966ff, dark: 0x6a1aa8 }, // magenta
+    3: { idleX: +0.7, color: 0xffa64d, dark: 0xa86a1a }, // amber
+    4: { idleX: +2.0, color: 0x5ee090, dark: 0x1aa84a }, // green
+  };
+
   const PHASES = {
     descend:  { dur: 1.05 },
     close:    { dur: 0.4 },
@@ -443,23 +389,137 @@ export function createChamber({ width, height, container }) {
     return:   { dur: 0.85 },
   };
 
-  let extractAnim = null;
+  const CLAW_SPEED = 3.2;
+  const CLAW_Z_MIN = -(CAB.innerD / 2) + 0.55;
+  const CLAW_Z_MAX = +(CAB.innerD / 2) - 0.55;
 
-  function runExtract({ fragment, onComplete } = {}) {
-    if (extractAnim) return false; // already busy
-    // Snapshot the X/Z where the player aimed the claw — the extract animation
-    // descends straight down here, so it grabs whatever's underneath.
-    const grabX = claw.group.position.x;
-    const grabZ = claw.group.position.z;
+  // Claws are added on demand as players connect (addClaw/removeClaw below).
+  // Empty chamber on boot — first scan-and-join spawns the first claw.
+  const claws = {};
 
-    // Pick the topmost rock close to the claw's X/Z so the grab looks plausible.
+  function addClaw(slot) {
+    if (claws[slot]) return; // already there
+    const layout = SLOT_LAYOUT[slot];
+    if (!layout) return;
+    const c = buildClaw({ color: layout.color, darkColor: layout.dark });
+    c.group.position.set(layout.idleX, IDLE_Y, 0);
+    cabinetGroup.add(c.group);
+
+    const cable = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.038, 0.038, 1, 10),
+      new THREE.MeshStandardMaterial({
+        color: layout.color,
+        roughness: 0.55,
+        metalness: 0.3,
+        emissive: layout.dark,
+        emissiveIntensity: 0.15,
+      })
+    );
+    cabinetGroup.add(cable);
+
+    const pulley = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.14, 0.14, 0.14, 24),
+      new THREE.MeshStandardMaterial({ color: 0x1a2a4a, roughness: 0.4, metalness: 0.7 })
+    );
+    pulley.rotation.z = Math.PI / 2;
+    pulley.position.set(layout.idleX, cableTopY, 0);
+    cabinetGroup.add(pulley);
+
+    const ROAM = 0.85;
+    const xMin = Math.max(-(CAB.innerW / 2) + c.R + 0.2, layout.idleX - ROAM);
+    const xMax = Math.min(+(CAB.innerW / 2) - c.R - 0.2, layout.idleX + ROAM);
+
+    claws[slot] = {
+      slot,
+      layout,
+      group: c.group,
+      setJawOpen: c.setJawOpen,
+      SCOOP_H: c.SCOOP_H,
+      cable,
+      pulley,
+      pulleyPos: new THREE.Vector3(layout.idleX, cableTopY, 0),
+      targetX: layout.idleX,
+      targetZ: 0,
+      xMin, xMax,
+      extractAnim: null,
+    };
+  }
+
+  function removeClaw(slot) {
+    const c = claws[slot];
+    if (!c) return;
+
+    // If there's a kinematic rock held mid-extract, release it back to dynamic
+    // so it doesn't float in place after the claw vanishes.
+    if (c.extractAnim?.targetRock && !c.extractAnim.released) {
+      const r = c.extractAnim.targetRock;
+      r.body.type = CANNON.Body.DYNAMIC;
+      r.body.wakeUp();
+    }
+
+    cabinetGroup.remove(c.group);
+    cabinetGroup.remove(c.cable);
+    cabinetGroup.remove(c.pulley);
+    c.group.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) {
+        const m = obj.material;
+        if (Array.isArray(m)) m.forEach((x) => x.dispose());
+        else m.dispose();
+      }
+    });
+    c.cable.geometry?.dispose();
+    c.cable.material?.dispose();
+    c.pulley.geometry?.dispose();
+    c.pulley.material?.dispose();
+    delete claws[slot];
+  }
+
+  // Slot-aware APIs --------------------------------------------------------
+  function applyInput(slot, input, dt) {
+    const c = claws[slot];
+    if (!c || c.extractAnim || !input) return;
+    if (input.left)  c.targetX -= CLAW_SPEED * dt;
+    if (input.right) c.targetX += CLAW_SPEED * dt;
+    if (input.up)    c.targetZ -= CLAW_SPEED * dt;
+    if (input.down)  c.targetZ += CLAW_SPEED * dt;
+    c.targetX = Math.max(c.xMin, Math.min(c.xMax, c.targetX));
+    c.targetZ = Math.max(CLAW_Z_MIN, Math.min(CLAW_Z_MAX, c.targetZ));
+  }
+
+  function setClawTarget(slot, x, z) {
+    const c = claws[slot];
+    if (!c) return;
+    c.targetX = Math.max(c.xMin, Math.min(c.xMax, x));
+    c.targetZ = Math.max(CLAW_Z_MIN, Math.min(CLAW_Z_MAX, z));
+  }
+
+  function getClawPosition(slot) {
+    const c = claws[slot];
+    if (!c) return null;
+    return { x: c.group.position.x, y: c.group.position.y, z: c.group.position.z };
+  }
+
+  function isExtracting(slot) {
+    if (slot === undefined) {
+      return Object.values(claws).some((c) => c.extractAnim);
+    }
+    return !!claws[slot]?.extractAnim;
+  }
+
+  function runExtract(slot, { fragment, onComplete } = {}) {
+    const c = claws[slot];
+    if (!c || c.extractAnim) return false;
+
+    const grabX = c.group.position.x;
+    const grabZ = c.group.position.z;
+
     const candidates = rocks
       .slice()
       .sort((a, b) => {
         const da = Math.hypot(a.body.position.x - grabX, a.body.position.z - grabZ);
         const db = Math.hypot(b.body.position.x - grabX, b.body.position.z - grabZ);
-        // Weight by distance and inverse height so close + high rocks win.
-        return (da - (a.body.position.y * 0.2)) - (db - (b.body.position.y * 0.2));
+        return (da - a.body.position.y * 0.2) - (db - b.body.position.y * 0.2);
       })
       .slice(0, 6);
     const targetRock = candidates[Math.floor(Math.random() * candidates.length)];
@@ -470,7 +530,7 @@ export function createChamber({ width, height, container }) {
       targetRock.body.angularVelocity.set(0, 0, 0);
     }
 
-    extractAnim = {
+    c.extractAnim = {
       phase: 'descend',
       tStart: clock.getElapsedTime(),
       targetRock,
@@ -483,64 +543,64 @@ export function createChamber({ width, height, container }) {
     return true;
   }
 
-  function updateExtract(t) {
-    if (!extractAnim) return;
-    const e = extractAnim;
+  function updateExtract(c, t) {
+    const e = c.extractAnim;
+    if (!e) return;
     const phaseDur = PHASES[e.phase].dur;
     const p = Math.max(0, Math.min(1, (t - e.tStart) / phaseDur));
+    const advance = (next) => { e.phase = next; e.tStart = t; };
 
     switch (e.phase) {
       case 'descend': {
-        claw.group.position.y = lerp(IDLE_Y, GRAB_Y, easeInOut(p));
-        claw.group.position.x = e.grabX;
-        claw.group.position.z = e.grabZ;
-        claw.setJawOpen(easeOut(p)); // open as we descend
-        if (p >= 1) advance(t, 'close');
+        c.group.position.y = lerp(IDLE_Y, GRAB_Y, easeInOut(p));
+        c.group.position.x = e.grabX;
+        c.group.position.z = e.grabZ;
+        c.setJawOpen(easeOut(p));
+        if (p >= 1) advance('close');
         break;
       }
       case 'close': {
-        claw.setJawOpen(1 - easeOut(p));
-        if (e.targetRock) {
-          // Snap the rock to the scoop bottom over the close duration so the
-          // grab looks like the jaws caught the top of the pile.
-          attachRockToClaw(e.targetRock, p);
-        }
-        if (p >= 1) advance(t, 'ascend');
+        c.setJawOpen(1 - easeOut(p));
+        if (e.targetRock) attachRockToClaw(c, e.targetRock, p);
+        if (p >= 1) advance('ascend');
         break;
       }
       case 'ascend': {
-        claw.group.position.y = lerp(GRAB_Y, IDLE_Y, easeInOut(p));
-        claw.group.position.x = e.grabX;
-        claw.group.position.z = e.grabZ;
-        if (e.targetRock) attachRockToClaw(e.targetRock, 1);
-        if (p >= 1) advance(t, 'deliver');
+        c.group.position.y = lerp(GRAB_Y, IDLE_Y, easeInOut(p));
+        c.group.position.x = e.grabX;
+        c.group.position.z = e.grabZ;
+        if (e.targetRock) attachRockToClaw(c, e.targetRock, 1);
+        if (p >= 1) advance('deliver');
         break;
       }
       case 'deliver': {
-        claw.group.position.y = lerp(IDLE_Y, DELIVER_Y, easeInOut(p));
-        claw.group.position.x = lerp(e.grabX, 0, easeInOut(p)); // drift back to center
-        claw.group.position.z = lerp(e.grabZ, 0, easeInOut(p));
-        if (e.targetRock) attachRockToClaw(e.targetRock, 1);
-        if (p >= 1) advance(t, 'release');
+        c.group.position.y = lerp(IDLE_Y, DELIVER_Y, easeInOut(p));
+        c.group.position.x = lerp(e.grabX, c.layout.idleX, easeInOut(p));
+        c.group.position.z = lerp(e.grabZ, 0, easeInOut(p));
+        if (e.targetRock) attachRockToClaw(c, e.targetRock, 1);
+        if (p >= 1) advance('release');
         break;
       }
       case 'release': {
-        claw.setJawOpen(easeOut(p));
+        c.setJawOpen(easeOut(p));
         if (p >= 0.4 && !e.released && e.targetRock) {
-          consumeRock(e.targetRock); // remove + spawn a replacement
+          consumeRock(e.targetRock);
           e.released = true;
         }
-        if (p >= 1) advance(t, 'return');
+        if (p >= 1) advance('return');
         break;
       }
       case 'return': {
-        claw.group.position.y = lerp(DELIVER_Y, IDLE_Y, easeInOut(p));
-        claw.setJawOpen(1 - easeOut(p));
+        c.group.position.y = lerp(DELIVER_Y, IDLE_Y, easeInOut(p));
+        c.setJawOpen(1 - easeOut(p));
         if (p >= 1) {
-          claw.group.position.y = IDLE_Y;
-          claw.setJawOpen(0);
+          c.group.position.y = IDLE_Y;
+          c.setJawOpen(0);
+          // Re-center targets so it doesn't drift on next idle.
+          c.targetX = c.layout.idleX;
+          c.targetZ = 0;
           const cb = e.onComplete;
-          extractAnim = null;
+          c.extractAnim = null;
           if (cb) cb();
         }
         break;
@@ -548,16 +608,10 @@ export function createChamber({ width, height, container }) {
     }
   }
 
-  function advance(t, nextPhase) {
-    extractAnim.phase = nextPhase;
-    extractAnim.tStart = t;
-  }
-
-  function attachRockToClaw(rock, p) {
-    // Position the rock progressively under the scoop bottom.
-    const cx = claw.group.position.x;
-    const cy = claw.group.position.y - (claw.SCOOP_H || 0.78) - 0.05;
-    const cz = claw.group.position.z;
+  function attachRockToClaw(c, rock, p) {
+    const cx = c.group.position.x;
+    const cy = c.group.position.y - (c.SCOOP_H || 0.78) - 0.05;
+    const cz = c.group.position.z;
     if (p < 1) {
       rock.body.position.set(
         lerp(rock.body.position.x, cx, p),
@@ -571,11 +625,9 @@ export function createChamber({ width, height, container }) {
   }
 
   function consumeRock(rock) {
-    // Remove the carried rock and spawn a fresh one from above to keep the
-    // pile at a consistent volume.
     world.removeBody(rock.body);
     cabinetGroup.remove(rock.mesh);
-    rock.mesh.geometry = null; // geometry is shared; don't dispose
+    rock.mesh.geometry = null;
     rock.mesh.material.dispose();
     const idx = rocks.indexOf(rock);
     if (idx !== -1) rocks.splice(idx, 1);
@@ -585,6 +637,18 @@ export function createChamber({ width, height, container }) {
       innerTopY - 0.7,
       (Math.random() - 0.5) * (CAB.innerD - 1.0)
     );
+  }
+
+  // Cable transform: connect pulley (fixed) to claw shackle each frame.
+  const _tmpDir = new THREE.Vector3();
+  const _Y_UP = new THREE.Vector3(0, 1, 0);
+  function setCableBetween(cable, from, to) {
+    _tmpDir.set(to.x - from.x, to.y - from.y, to.z - from.z);
+    const len = _tmpDir.length();
+    cable.scale.y = Math.max(0.01, len);
+    cable.position.set((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2);
+    _tmpDir.divideScalar(len || 1);
+    cable.quaternion.setFromUnitVectors(_Y_UP, _tmpDir);
   }
 
   // ---- Animation loop ---------------------------------------------------
@@ -601,22 +665,23 @@ export function createChamber({ width, height, container }) {
       r.mesh.quaternion.copy(r.body.quaternion);
     }
 
-    if (extractAnim) {
-      updateExtract(t);
-    } else {
-      // Player-driven idle: ease claw toward target X/Z continuously.
-      claw.group.position.x += (clawTargetX - claw.group.position.x) * Math.min(1, 10 * dt);
-      claw.group.position.z += (clawTargetZ - claw.group.position.z) * Math.min(1, 10 * dt);
-      claw.group.position.y = IDLE_Y;
-      claw.group.rotation.y = Math.sin(t * 0.4) * 0.03; // tiny passive sway
+    // Each claw runs its own extract or eases toward its idle/target.
+    for (const c of Object.values(claws)) {
+      if (c.extractAnim) {
+        updateExtract(c, t);
+      } else {
+        c.group.position.x += (c.targetX - c.group.position.x) * Math.min(1, 10 * dt);
+        c.group.position.z += (c.targetZ - c.group.position.z) * Math.min(1, 10 * dt);
+        c.group.position.y = IDLE_Y;
+      }
+      // Cable from this claw's pulley to its shackle (offset above scoop top).
+      const shackleY = c.group.position.y + 0.34;
+      setCableBetween(
+        c.cable,
+        c.pulleyPos,
+        { x: c.group.position.x, y: shackleY, z: c.group.position.z }
+      );
     }
-
-    // Cable follows the claw shackle position
-    const sx = claw.group.position.x;
-    const sy = claw.group.position.y + 0.34;
-    const newLen = cableTopY - sy;
-    cable.scale.y = newLen / cableLen;
-    cable.position.set(sx, (cableTopY + sy) / 2, 0);
 
     // Subtle neon pulse on the front outline + sign
     const pulse = 0.85 + Math.sin(t * 1.4) * 0.15;
@@ -631,11 +696,14 @@ export function createChamber({ width, height, container }) {
   rafId = requestAnimationFrame(tick);
 
   return {
+    addClaw,
+    removeClaw,
     runExtract,
     setClawTarget,
     applyInput,
     getClawPosition,
-    isExtracting: () => !!extractAnim,
+    isExtracting,
+    activeSlots: () => Object.keys(claws).map(Number),
     dispose() {
       cancelAnimationFrame(rafId);
       renderer.dispose();
@@ -715,22 +783,20 @@ function buildSign(text, w, h) {
 // KIA-style hexagonal scoop:
 //   • open-top hex prism body
 //   • two hinged "jaws" on top that swing open/closed
-//   • exposes `setJawOpen(0..1)` for the extract animation in Step 5
-function buildClaw() {
+//   • exposes `setJawOpen(0..1)` for the extract animation
+// Per-slot colors are passed in so each of the 4 claws is identifiable.
+function buildClaw({ color = 0x2c7fff, darkColor = 0x174ba8 } = {}) {
   const group = new THREE.Group();
 
-  const SCOOP_BLUE = 0x2c7fff;
-  const SCOOP_BLUE_DARK = 0x174ba8;
-
   const blueMat = new THREE.MeshStandardMaterial({
-    color: SCOOP_BLUE,
+    color,
     roughness: 0.32,
     metalness: 0.55,
-    emissive: 0x0a2a66,
+    emissive: darkColor,
     emissiveIntensity: 0.18,
   });
   const blueDarkMat = new THREE.MeshStandardMaterial({
-    color: SCOOP_BLUE_DARK,
+    color: darkColor,
     roughness: 0.4,
     metalness: 0.6,
   });

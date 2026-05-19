@@ -12,7 +12,6 @@ import {
   writeSlotAction,
   writeSlotInput,
   subscribeSlot,
-  subscribeActiveSlot,
   SLOT_COUNT,
 } from '../shared/slots.js';
 import { fetchResult } from '../shared/results.js';
@@ -617,7 +616,6 @@ function onActionButton() {
 const firebaseMode = isFirebaseConfigured();
 let stopHeartbeat = null;
 let unsubscribeSlot = null;
-let unsubscribeActive = null;
 let lastResultSeen = null;
 
 render();
@@ -649,19 +647,9 @@ async function boot() {
   stopHeartbeat = startHeartbeat(slot);
   await setupSlotDisconnect(slot);
 
-  // Watch the active slot pointer — go between 'idle' (when active) and 'queued' (when not).
-  unsubscribeActive = subscribeActiveSlot((active) => {
-    const isActive = active === slot;
-    if (state.status === 'result' || state.status === 'extracting') {
-      // Don't yank the user out of a result; advance after dismiss.
-      return;
-    }
-    setState({
-      slot,
-      isActive,
-      status: isActive ? 'idle' : 'queued',
-    });
-  });
+  // Parallel multi-claw model: every connected slot is active in its own
+  // lane. We go straight to 'idle' on claim — no queue.
+  setState({ slot, isActive: true, status: 'idle' });
 
   unsubscribeSlot = subscribeSlot(slot, async (slotData) => {
     if (!slotData) return;
@@ -680,7 +668,6 @@ window.addEventListener('pagehide', () => {
   if (state.slot) releaseSlot(state.slot).catch(() => {});
   if (stopHeartbeat) stopHeartbeat();
   if (unsubscribeSlot) unsubscribeSlot();
-  if (unsubscribeActive) unsubscribeActive();
 });
 
 console.log('[controller] mounted', { firebaseMode, state });

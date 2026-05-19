@@ -5,16 +5,46 @@
 import QRCode from 'qrcode';
 import { createStage, STAGE_W, STAGE_H } from '../shared/stage.js';
 import { createChamber } from './chamber.js';
-import { isFirebaseConfigured } from '../shared/firebase.js';
-import {
-  subscribeAllSlots,
-  clearSlotAction,
-  subscribeActiveSlot,
-  setActiveSlot,
-  isSlotStale,
-} from '../shared/slots.js';
+import { isFirebaseConfigured, resetRoom } from '../shared/firebase.js';
+import { subscribeAllSlots, clearSlotAction } from '../shared/slots.js';
 import { pushResult } from '../shared/results.js';
 import { rollFragment } from '../shared/goods.js';
+
+// ---- Reset hook ----------------------------------------------------------
+// Visit `/?reset=1` once to wipe `rooms/default` (kicks all controllers).
+// Also exposes window.resetRoom() for ad-hoc devtools cleanup.
+if (isFirebaseConfigured()) {
+  window.resetRoom = () => resetRoom().then(() => console.log('[screen] room wiped'));
+  if (new URLSearchParams(location.search).get('reset') === '1') {
+    resetRoom()
+      .then(() => {
+        showResetBanner();
+        history.replaceState(null, '', location.pathname);
+      })
+      .catch((err) => console.error('[screen] reset failed', err));
+  }
+}
+
+function showResetBanner() {
+  const b = document.createElement('div');
+  b.style.cssText = `
+    position:fixed; top:24px; left:50%; transform:translateX(-50%);
+    z-index:9999;
+    padding:18px 36px;
+    background:rgba(20,20,80,0.92);
+    border:1.5px solid #4dd0ff;
+    border-radius:14px;
+    color:#cdebff;
+    font-family:'JetBrains Mono', system-ui, sans-serif;
+    font-size:18px; letter-spacing:6px;
+    box-shadow: 0 0 60px rgba(77,208,255,0.6);
+    transition: opacity 0.6s ease;
+  `;
+  b.textContent = 'ROOM RESET';
+  document.body.appendChild(b);
+  setTimeout(() => { b.style.opacity = '0'; }, 2200);
+  setTimeout(() => b.remove(), 3000);
+}
 
 const host = document.getElementById('screen-root');
 const stage = createStage(host);
@@ -29,97 +59,86 @@ stage.appendChild(chamberWrap);
 
 const chamber = createChamber({ width: STAGE_W, height: STAGE_H, container: chamberWrap });
 
-// ---- Firebase wiring ---------------------------------------------------
-// Single-claw model: only ONE slot can drive the chamber at a time
-// (`activeSlot`). The screen elects the active slot whenever it sees the
-// current one disconnect or finish an extract. The active slot's input
-// drives the claw position every frame; pressing the action button writes
-// `action='extract'` and we run the chamber animation, then push a result.
+// ---- Firebase wiring (parallel multi-claw model) -----------------------
+// Each slot has its own claw. Claws appear/disappear as players connect
+// or leave. Every connected slot drives ITS OWN claw in parallel.
 
-let activeSlot = null;
 let allSlots = {};
-let activeInput = { left: false, right: false, up: false, down: false };
-let extracting = false;
-
-function pickNextActiveSlot() {
-  // Prefer lowest-numbered connected & non-stale slot.
-  for (let i = 1; i <= 4; i++) {
-    const s = allSlots[i];
-    if (s && s.connected && !isSlotStale(s)) return i;
-  }
-  return null;
-}
+const slotInputs = {};      // slot -> { left, right, up, down }
+const extractingSlots = new Set();
 
 if (isFirebaseConfigured()) {
-  subscribeActiveSlot((slot) => {
-    activeSlot = slot;
-    // Reset input when active slot changes so leftover state doesn't drag.
-    activeInput = { left: false, right: false, up: false, down: false };
-  });
-
   subscribeAllSlots((slots) => {
     allSlots = slots || {};
 
-    // If there's no active slot but someone is connected, elect one.
-    if (!activeSlot) {
-      const next = pickNextActiveSlot();
-      if (next) setActiveSlot(next).catch(() => {});
-    } else {
-      // If the active slot disconnected or went stale, pass the turn.
-      const cur = allSlots[activeSlot];
-      if (!cur || !cur.connected || isSlotStale(cur)) {
-        const next = pickNextActiveSlot();
-        setActiveSlot(next).catch(() => {});
+    // 1) Add/remove claws based on connection state.
+    const connected = new Set();
+    for (let s = 1; s <= 4; s++) {
+      const d = allSlots[s];
+      if (d && d.connected) {
+        connected.add(s);
+        chamber.addClaw(s);
+      }
+    }
+    for (const s of chamber.activeSlots()) {
+      if (!connected.has(s)) chamber.removeClaw(s);
+    }
+
+    // 2) Update each slot's input snapshot.
+    for (let s = 1; s <= 4; s++) {
+      const d = allSlots[s];
+      if (d && d.connected && d.input) {
+        slotInputs[s] = {
+          left: !!d.input.left,
+          right: !!d.input.right,
+          up: !!d.input.up,
+          down: !!d.input.down,
+        };
+      } else {
+        slotInputs[s] = { left: false, right: false, up: false, down: false };
       }
     }
 
-    // Read the active slot's live input for the claw drive loop.
-    if (activeSlot && allSlots[activeSlot]?.input) {
-      activeInput = {
-        left: !!allSlots[activeSlot].input.left,
-        right: !!allSlots[activeSlot].input.right,
-        up: !!allSlots[activeSlot].input.up,
-        down: !!allSlots[activeSlot].input.down,
-      };
-    }
+    // 3) Handle extract actions.
+    for (let s = 1; s <= 4; s++) {
+      const d = allSlots[s];
+      if (!d || !d.connected) continue;
+      if (d.action !== 'extract') continue;
+      if (extractingSlots.has(s)) continue;
 
-    // Handle extract action for the active slot only.
-    if (activeSlot && !extracting) {
-      const cur = allSlots[activeSlot];
-      if (cur && cur.action === 'extract') {
-        extracting = true;
-        clearSlotAction(activeSlot).catch(() => {});
+      extractingSlots.add(s);
+      clearSlotAction(s).catch(() => {});
 
-        const fragment = rollFragment();
-        chamber.runExtract({
-          fragment,
-          onComplete: async () => {
-            try {
-              await pushResult(activeSlot, fragment);
-            } catch (err) {
-              console.error('[screen] pushResult failed', err);
-            }
-            extracting = false;
-            // After this extract, advance the turn to the next connected slot.
-            const next = pickNextActiveSlot();
-            if (next !== activeSlot) setActiveSlot(next).catch(() => {});
-          },
-        });
-      }
+      const fragment = rollFragment();
+      chamber.runExtract(s, {
+        fragment,
+        onComplete: async () => {
+          try {
+            await pushResult(s, fragment);
+          } catch (err) {
+            console.error('[screen] pushResult failed', err);
+          }
+          extractingSlots.delete(s);
+        },
+      });
     }
   });
 
-  // Drive the chamber claw at ~60Hz from the latest known input.
+  // ~60Hz drive loop — apply each connected slot's input to its claw.
   let last = performance.now();
   function driveLoop(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    if (!chamber.isExtracting()) chamber.applyInput(activeInput, dt);
+    for (let s = 1; s <= 4; s++) {
+      if (slotInputs[s] && !chamber.isExtracting(s)) {
+        chamber.applyInput(s, slotInputs[s], dt);
+      }
+    }
     requestAnimationFrame(driveLoop);
   }
   requestAnimationFrame(driveLoop);
 
-  console.log('[screen] Firebase wiring active (single-claw turn rotation)');
+  console.log('[screen] Firebase wiring active (parallel multi-claw)');
 } else {
   console.warn('[screen] Firebase not configured — chamber will be idle');
 }

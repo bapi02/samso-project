@@ -57,3 +57,10 @@ export function ensureUserId() {
   }
   return id;
 }
+
+// Wipe the room state (slots + activeSlot). Use carefully — kicks everyone.
+// Called by the screen's ?reset=1 URL param or window.resetRoom() helper.
+export async function resetRoom() {
+  const { ref, set } = await import('firebase/database');
+  await set(ref(getDb(), `rooms/${ROOM_ID}`), null);
+}
