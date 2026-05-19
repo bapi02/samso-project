@@ -6,8 +6,8 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 .vite
 *.log
 .firebase

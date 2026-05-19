@@ -314,7 +314,7 @@ export function createChamber({ width, height, container }) {
   function spawnRock(x, y, z, typeOverride) {
     const type = typeOverride !== undefined ? typeOverride : Math.floor(Math.random() * 4);
     const geo = rockGeoms[type];
-    const scale = 0.42 + Math.random() * 0.32;
+    const scale = 0.55 + Math.random() * 0.42;
 
     const mat = new THREE.MeshStandardMaterial({
       color: PALETTE.rockTones[type],
@@ -345,18 +345,20 @@ export function createChamber({ width, height, container }) {
     rocks.push({ mesh, body, type });
   }
 
-  // Spawn the full pile synchronously, then pre-simulate so the cabinet
-  // is already populated by the time the first frame renders.
-  const initialCount = 30;
+  // Spawn a dense pile, then pre-simulate so the cabinet is already populated
+  // by the time the first frame renders. We distribute spawn Y across layers
+  // so they fall into a fuller pile instead of collapsing onto each other.
+  const initialCount = 80;
   for (let i = 0; i < initialCount; i++) {
+    const layer = Math.floor(i / 12); // ~12 rocks per layer
     spawnRock(
-      (Math.random() - 0.5) * (CAB.innerW - 1.0),
-      innerFloorY + 0.6 + (i % 6) * 0.7,
-      (Math.random() - 0.5) * (CAB.innerD - 0.8)
+      (Math.random() - 0.5) * (CAB.innerW - 1.2),
+      innerFloorY + 0.6 + layer * 0.75 + Math.random() * 0.25,
+      (Math.random() - 0.5) * (CAB.innerD - 0.9)
     );
   }
-  // 4 seconds of pre-simulation at fixed 60Hz — enough for rocks to settle.
-  for (let i = 0; i < 240; i++) world.step(1 / 60);
+  // 6 seconds of pre-simulation at fixed 60Hz — enough for 80 rocks to settle.
+  for (let i = 0; i < 360; i++) world.step(1 / 60);
   // Sync meshes to the settled body positions.
   for (const r of rocks) {
     r.mesh.position.copy(r.body.position);
@@ -368,15 +370,171 @@ export function createChamber({ width, height, container }) {
   claw.group.position.set(0, innerTopY - 1.4, 0);
   cabinetGroup.add(claw.group);
 
-  // Cable from top of chamber to claw body
+  // Cable from top of chamber to claw shackle — thicker KIA-blue rope.
   const cableTopY = innerTopY - 0.1;
-  const cableLen = cableTopY - (innerTopY - 1.4);
+  const clawShackleY = innerTopY - 1.4 + 0.34;
+  const cableLen = cableTopY - clawShackleY;
   const cable = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.018, 0.018, cableLen, 8),
-    new THREE.MeshStandardMaterial({ color: 0x99aacc, roughness: 0.6, metalness: 0.4 })
+    new THREE.CylinderGeometry(0.045, 0.045, cableLen, 12),
+    new THREE.MeshStandardMaterial({
+      color: 0x2c7fff,
+      roughness: 0.55,
+      metalness: 0.3,
+      emissive: 0x0a2a66,
+      emissiveIntensity: 0.1,
+    })
   );
-  cable.position.set(0, cableTopY - cableLen / 2, 0);
+  cable.position.set(0, clawShackleY + cableLen / 2, 0);
   cabinetGroup.add(cable);
+
+  // Cable pulley at the top (where it enters the ceiling housing)
+  const pulley = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.18, 0.18, 0.18, 24),
+    new THREE.MeshStandardMaterial({ color: 0x1a2a4a, roughness: 0.4, metalness: 0.7 })
+  );
+  pulley.rotation.z = Math.PI / 2;
+  pulley.position.set(0, cableTopY, 0);
+  cabinetGroup.add(pulley);
+
+  // ---- Extract animation state machine ---------------------------------
+  // Idle Y: where the claw rests. Grab Y: just above the pile top.
+  const IDLE_Y = innerTopY - 1.4;
+  const GRAB_Y = innerFloorY + 2.6;
+  const DELIVER_Y = innerTopY - 0.4; // up into the funnel
+  const PHASES = {
+    descend:  { dur: 1.05 },
+    close:    { dur: 0.4 },
+    ascend:   { dur: 0.85 },
+    deliver:  { dur: 0.5 },
+    release:  { dur: 0.5 },
+    return:   { dur: 0.85 },
+  };
+
+  let extractAnim = null;
+
+  function runExtract({ fragment, onComplete } = {}) {
+    if (extractAnim) return false; // already busy
+    // Pick a rock from the top of the pile so the grab looks plausible.
+    const sorted = rocks.slice().sort((a, b) => b.body.position.y - a.body.position.y);
+    const candidates = sorted.slice(0, Math.min(8, sorted.length));
+    const targetRock = candidates[Math.floor(Math.random() * candidates.length)];
+
+    if (targetRock) {
+      // Freeze the rock so we can move it manually during carry.
+      targetRock.body.type = CANNON.Body.KINEMATIC;
+      targetRock.body.velocity.set(0, 0, 0);
+      targetRock.body.angularVelocity.set(0, 0, 0);
+    }
+
+    extractAnim = {
+      phase: 'descend',
+      tStart: clock.getElapsedTime(),
+      targetRock,
+      fragment,
+      onComplete,
+      released: false,
+    };
+    return true;
+  }
+
+  function updateExtract(t) {
+    if (!extractAnim) return;
+    const e = extractAnim;
+    const phaseDur = PHASES[e.phase].dur;
+    const p = Math.max(0, Math.min(1, (t - e.tStart) / phaseDur));
+
+    switch (e.phase) {
+      case 'descend': {
+        claw.group.position.y = lerp(IDLE_Y, GRAB_Y, easeInOut(p));
+        claw.group.position.x = 0;
+        claw.setJawOpen(easeOut(p)); // open as we descend
+        if (p >= 1) advance(t, 'close');
+        break;
+      }
+      case 'close': {
+        claw.setJawOpen(1 - easeOut(p));
+        if (e.targetRock) {
+          // Snap the rock to the scoop bottom over the close duration so the
+          // grab looks like the jaws caught the top of the pile.
+          attachRockToClaw(e.targetRock, p);
+        }
+        if (p >= 1) advance(t, 'ascend');
+        break;
+      }
+      case 'ascend': {
+        claw.group.position.y = lerp(GRAB_Y, IDLE_Y, easeInOut(p));
+        if (e.targetRock) attachRockToClaw(e.targetRock, 1);
+        if (p >= 1) advance(t, 'deliver');
+        break;
+      }
+      case 'deliver': {
+        claw.group.position.y = lerp(IDLE_Y, DELIVER_Y, easeInOut(p));
+        if (e.targetRock) attachRockToClaw(e.targetRock, 1);
+        if (p >= 1) advance(t, 'release');
+        break;
+      }
+      case 'release': {
+        claw.setJawOpen(easeOut(p));
+        if (p >= 0.4 && !e.released && e.targetRock) {
+          consumeRock(e.targetRock); // remove + spawn a replacement
+          e.released = true;
+        }
+        if (p >= 1) advance(t, 'return');
+        break;
+      }
+      case 'return': {
+        claw.group.position.y = lerp(DELIVER_Y, IDLE_Y, easeInOut(p));
+        claw.setJawOpen(1 - easeOut(p));
+        if (p >= 1) {
+          claw.group.position.y = IDLE_Y;
+          claw.setJawOpen(0);
+          const cb = e.onComplete;
+          extractAnim = null;
+          if (cb) cb();
+        }
+        break;
+      }
+    }
+  }
+
+  function advance(t, nextPhase) {
+    extractAnim.phase = nextPhase;
+    extractAnim.tStart = t;
+  }
+
+  function attachRockToClaw(rock, p) {
+    // Position the rock progressively under the scoop bottom.
+    const cx = claw.group.position.x;
+    const cy = claw.group.position.y - (claw.SCOOP_H || 0.78) - 0.05;
+    const cz = claw.group.position.z;
+    if (p < 1) {
+      rock.body.position.set(
+        lerp(rock.body.position.x, cx, p),
+        lerp(rock.body.position.y, cy, p),
+        lerp(rock.body.position.z, cz, p)
+      );
+    } else {
+      rock.body.position.set(cx, cy, cz);
+    }
+    rock.body.velocity.set(0, 0, 0);
+  }
+
+  function consumeRock(rock) {
+    // Remove the carried rock and spawn a fresh one from above to keep the
+    // pile at a consistent volume.
+    world.removeBody(rock.body);
+    cabinetGroup.remove(rock.mesh);
+    rock.mesh.geometry = null; // geometry is shared; don't dispose
+    rock.mesh.material.dispose();
+    const idx = rocks.indexOf(rock);
+    if (idx !== -1) rocks.splice(idx, 1);
+
+    spawnRock(
+      (Math.random() - 0.5) * (CAB.innerW - 1.4),
+      innerTopY - 0.7,
+      (Math.random() - 0.5) * (CAB.innerD - 1.0)
+    );
+  }
 
   // ---- Animation loop ---------------------------------------------------
   const clock = new THREE.Clock();
@@ -392,11 +550,21 @@ export function createChamber({ width, height, container }) {
       r.mesh.quaternion.copy(r.body.quaternion);
     }
 
-    // Idle claw sway
-    claw.group.position.x = Math.sin(t * 0.6) * 0.08;
-    claw.group.rotation.y = Math.sin(t * 0.4) * 0.05;
-    cable.position.x = claw.group.position.x * 0.5;
-    cable.rotation.z = Math.sin(t * 0.6) * 0.012;
+    if (extractAnim) {
+      updateExtract(t);
+    } else {
+      // Idle claw sway (only when not extracting)
+      claw.group.position.x = Math.sin(t * 0.6) * 0.08;
+      claw.group.position.y = IDLE_Y;
+      claw.group.rotation.y = Math.sin(t * 0.4) * 0.05;
+    }
+
+    // Cable follows the claw shackle position
+    const sx = claw.group.position.x;
+    const sy = claw.group.position.y + 0.34;
+    const newLen = cableTopY - sy;
+    cable.scale.y = newLen / cableLen;
+    cable.position.set(sx, (cableTopY + sy) / 2, 0);
 
     // Subtle neon pulse on the front outline + sign
     const pulse = 0.85 + Math.sin(t * 1.4) * 0.15;
@@ -411,6 +579,8 @@ export function createChamber({ width, height, container }) {
   rafId = requestAnimationFrame(tick);
 
   return {
+    runExtract,
+    isExtracting: () => !!extractAnim,
     dispose() {
       cancelAnimationFrame(rafId);
       renderer.dispose();
@@ -428,6 +598,16 @@ export function createChamber({ width, height, container }) {
 }
 
 // ---- Helpers ----------------------------------------------------------
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+function easeOut(t) {
+  return 1 - Math.pow(1 - t, 2);
+}
+function easeInOut(t) {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
 
 function makeRockGeometry(type) {
   const geo = new THREE.IcosahedronGeometry(0.5, 1);
@@ -477,59 +657,114 @@ function buildSign(text, w, h) {
   return { canvas, texture: tex };
 }
 
+// KIA-style hexagonal scoop:
+//   • open-top hex prism body
+//   • two hinged "jaws" on top that swing open/closed
+//   • exposes `setJawOpen(0..1)` for the extract animation in Step 5
 function buildClaw() {
   const group = new THREE.Group();
 
-  const metalMat = new THREE.MeshStandardMaterial({
-    color: 0xb6c2d6,
-    roughness: 0.35,
-    metalness: 0.85,
+  const SCOOP_BLUE = 0x2c7fff;
+  const SCOOP_BLUE_DARK = 0x174ba8;
+
+  const blueMat = new THREE.MeshStandardMaterial({
+    color: SCOOP_BLUE,
+    roughness: 0.32,
+    metalness: 0.55,
+    emissive: 0x0a2a66,
+    emissiveIntensity: 0.18,
   });
-  const darkMetalMat = new THREE.MeshStandardMaterial({
-    color: 0x2a3548,
-    roughness: 0.45,
-    metalness: 0.8,
+  const blueDarkMat = new THREE.MeshStandardMaterial({
+    color: SCOOP_BLUE_DARK,
+    roughness: 0.4,
+    metalness: 0.6,
   });
 
-  // Top swivel disc (where the cable attaches)
-  const swivel = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.12, 24), metalMat);
-  swivel.position.y = 0.5;
-  group.add(swivel);
+  // Hex prism dimensions
+  const R = 0.62;                              // distance from center to hex vertex
+  const APOTHEM = R * Math.cos(Math.PI / 6);   // center to edge midpoint
+  const SCOOP_H = 0.78;
+  const RIM_T = 0.05;
 
-  // Body cylinder (the housing above the fingers)
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.32, 24), darkMetalMat);
-  body.position.y = 0.28;
+  // ---- Scoop body (open-top hex tube) -----------------------------------
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(R, R, SCOOP_H, 6, 1, true),
+    blueMat
+  );
+  body.position.y = -SCOOP_H / 2;
+  body.castShadow = true;
+  body.receiveShadow = true;
   group.add(body);
 
-  // Finger pivot bar (cross piece)
-  const pivot = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.5, 16), metalMat);
-  pivot.rotation.z = Math.PI / 2;
-  pivot.position.y = 0.12;
-  group.add(pivot);
+  // Bottom cap (hex disc — closes the underside)
+  const bottom = new THREE.Mesh(
+    new THREE.CylinderGeometry(R * 1.02, R * 1.02, 0.06, 6),
+    blueDarkMat
+  );
+  bottom.position.y = -SCOOP_H - 0.02;
+  bottom.castShadow = true;
+  group.add(bottom);
 
-  // Four curved fingers as box meshes splayed outward
-  const fingerCount = 4;
-  for (let i = 0; i < fingerCount; i++) {
-    const a = (i / fingerCount) * Math.PI * 2;
-    const finger = new THREE.Group();
+  // Rim ring (thicker accent right under where the jaws hinge)
+  const rim = new THREE.Mesh(
+    new THREE.CylinderGeometry(R * 1.04, R * 1.04, RIM_T, 6),
+    blueDarkMat
+  );
+  rim.position.y = 0;
+  group.add(rim);
 
-    const upper = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.42, 0.07), metalMat);
-    upper.position.y = -0.21;
-    upper.rotation.z = 0.32; // splay outward
-    finger.add(upper);
-
-    const lower = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.32, 0.06), metalMat);
-    lower.position.set(
-      Math.sin(0.32) * 0.42,
-      -0.42 - Math.cos(0.32) * 0.16,
-      0
+  // ---- Top jaws ---------------------------------------------------------
+  // Two flat hex-half plates, hinged on opposite parallel edges (z = ±APOTHEM).
+  // openAmount=0 → both plates lie flat (sealed lid).
+  // openAmount=1 → plates rotated ~75° outward (fully open).
+  function makeJaw(direction) {
+    const jaw = new THREE.Group();
+    const plate = new THREE.Mesh(
+      new THREE.BoxGeometry(R * 2 * 0.96, 0.07, APOTHEM * 0.98),
+      blueMat
     );
-    lower.rotation.z = -0.18;
-    finger.add(lower);
-
-    finger.rotation.y = a;
-    group.add(finger);
+    // Plate extends from the hinge (jaw origin, at the rim edge) inward.
+    plate.position.z = direction * (APOTHEM / 2);
+    plate.castShadow = true;
+    jaw.add(plate);
+    return jaw;
   }
 
-  return { group };
+  const jawA = makeJaw(+1);  // hinge at -z rim, plate extends toward center
+  jawA.position.set(0, 0.03, -APOTHEM);
+  group.add(jawA);
+
+  const jawB = makeJaw(-1);  // hinge at +z rim, plate extends toward center
+  jawB.position.set(0, 0.03, +APOTHEM);
+  group.add(jawB);
+
+  // ---- Cable shackle on top --------------------------------------------
+  // Looks like the KIA reference: a small post that the cable threads into.
+  const shackle = new THREE.Mesh(
+    new THREE.BoxGeometry(0.08, 0.22, 0.08),
+    blueMat
+  );
+  shackle.position.y = 0.18;
+  group.add(shackle);
+
+  const shackleCap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.08, 16, 12),
+    blueMat
+  );
+  shackleCap.position.y = 0.34;
+  group.add(shackleCap);
+
+  // ---- Public API for step 5 -------------------------------------------
+  // 0 = fully closed (jaws flat over the rim), 1 = fully open (~75°).
+  const MAX_OPEN = 1.3; // radians ≈ 75°
+  function setJawOpen(amount) {
+    const a = Math.max(0, Math.min(1, amount));
+    // jawA extends in +z; positive x-rotation tilts +z edge DOWN (closes inward),
+    // negative rotation tilts it UP (opens).
+    jawA.rotation.x = -a * MAX_OPEN;
+    jawB.rotation.x = +a * MAX_OPEN;
+  }
+  setJawOpen(0); // start closed
+
+  return { group, setJawOpen, R, SCOOP_H };
 }

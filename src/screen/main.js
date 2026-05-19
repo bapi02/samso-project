@@ -5,6 +5,10 @@
 import QRCode from 'qrcode';
 import { createStage, STAGE_W, STAGE_H } from '../shared/stage.js';
 import { createChamber } from './chamber.js';
+import { isFirebaseConfigured } from '../shared/firebase.js';
+import { subscribeAllSlots, clearSlotAction } from '../shared/slots.js';
+import { pushResult } from '../shared/results.js';
+import { rollFragment } from '../shared/goods.js';
 
 const host = document.getElementById('screen-root');
 const stage = createStage(host);
@@ -17,7 +21,43 @@ chamberWrap.style.cssText = `
 `;
 stage.appendChild(chamberWrap);
 
-createChamber({ width: STAGE_W, height: STAGE_H, container: chamberWrap });
+const chamber = createChamber({ width: STAGE_W, height: STAGE_H, container: chamberWrap });
+
+// ---- Firebase wiring: slot action → extract animation → result push ----
+if (isFirebaseConfigured()) {
+  const processing = new Set(); // slot numbers currently mid-animation
+
+  subscribeAllSlots((slots) => {
+    for (const [slotStr, slotData] of Object.entries(slots || {})) {
+      const slot = Number(slotStr);
+      if (!slotData || !slotData.connected) continue;
+      if (slotData.action !== 'extract') continue;
+      if (processing.has(slot)) continue;
+
+      processing.add(slot);
+      // Clear the action immediately so we don't re-trigger on subsequent
+      // RTDB events from the same slot before the animation finishes.
+      clearSlotAction(slot).catch(() => {});
+
+      const fragment = rollFragment();
+      chamber.runExtract({
+        fragment,
+        onComplete: async () => {
+          try {
+            await pushResult(slot, fragment);
+          } catch (err) {
+            console.error('[screen] pushResult failed', err);
+          }
+          processing.delete(slot);
+        },
+      });
+    }
+  });
+
+  console.log('[screen] Firebase wiring active');
+} else {
+  console.warn('[screen] Firebase not configured — chamber will be idle');
+}
 
 // ---- Intermittent QR + dialog overlay ----------------------------------
 // Layout matches the NEXIS reference render:
