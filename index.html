@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1000, initial-scale=1, user-scalable=no" />
+    <title>NEXTIS LAB · Screen</title>
+    <link rel="icon" href="data:," />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: #050510;
+        color: #fff;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        overflow: hidden;
+        user-select: none;
+      }
+      #screen-root {
+        position: fixed;
+        inset: 0;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="screen-root"></div>
+    <script type="module" src="/src/screen/main.js"></script>
+  </body>
+</html>
