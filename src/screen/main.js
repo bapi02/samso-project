@@ -6,7 +6,13 @@ import QRCode from 'qrcode';
 import { createStage, STAGE_W, STAGE_H } from '../shared/stage.js';
 import { createChamber } from './chamber.js';
 import { isFirebaseConfigured } from '../shared/firebase.js';
-import { subscribeAllSlots, clearSlotAction } from '../shared/slots.js';
+import {
+  subscribeAllSlots,
+  clearSlotAction,
+  subscribeActiveSlot,
+  setActiveSlot,
+  isSlotStale,
+} from '../shared/slots.js';
 import { pushResult } from '../shared/results.js';
 import { rollFragment } from '../shared/goods.js';
 
@@ -23,38 +29,97 @@ stage.appendChild(chamberWrap);
 
 const chamber = createChamber({ width: STAGE_W, height: STAGE_H, container: chamberWrap });
 
-// ---- Firebase wiring: slot action → extract animation → result push ----
+// ---- Firebase wiring ---------------------------------------------------
+// Single-claw model: only ONE slot can drive the chamber at a time
+// (`activeSlot`). The screen elects the active slot whenever it sees the
+// current one disconnect or finish an extract. The active slot's input
+// drives the claw position every frame; pressing the action button writes
+// `action='extract'` and we run the chamber animation, then push a result.
+
+let activeSlot = null;
+let allSlots = {};
+let activeInput = { left: false, right: false, up: false, down: false };
+let extracting = false;
+
+function pickNextActiveSlot() {
+  // Prefer lowest-numbered connected & non-stale slot.
+  for (let i = 1; i <= 4; i++) {
+    const s = allSlots[i];
+    if (s && s.connected && !isSlotStale(s)) return i;
+  }
+  return null;
+}
+
 if (isFirebaseConfigured()) {
-  const processing = new Set(); // slot numbers currently mid-animation
+  subscribeActiveSlot((slot) => {
+    activeSlot = slot;
+    // Reset input when active slot changes so leftover state doesn't drag.
+    activeInput = { left: false, right: false, up: false, down: false };
+  });
 
   subscribeAllSlots((slots) => {
-    for (const [slotStr, slotData] of Object.entries(slots || {})) {
-      const slot = Number(slotStr);
-      if (!slotData || !slotData.connected) continue;
-      if (slotData.action !== 'extract') continue;
-      if (processing.has(slot)) continue;
+    allSlots = slots || {};
 
-      processing.add(slot);
-      // Clear the action immediately so we don't re-trigger on subsequent
-      // RTDB events from the same slot before the animation finishes.
-      clearSlotAction(slot).catch(() => {});
+    // If there's no active slot but someone is connected, elect one.
+    if (!activeSlot) {
+      const next = pickNextActiveSlot();
+      if (next) setActiveSlot(next).catch(() => {});
+    } else {
+      // If the active slot disconnected or went stale, pass the turn.
+      const cur = allSlots[activeSlot];
+      if (!cur || !cur.connected || isSlotStale(cur)) {
+        const next = pickNextActiveSlot();
+        setActiveSlot(next).catch(() => {});
+      }
+    }
 
-      const fragment = rollFragment();
-      chamber.runExtract({
-        fragment,
-        onComplete: async () => {
-          try {
-            await pushResult(slot, fragment);
-          } catch (err) {
-            console.error('[screen] pushResult failed', err);
-          }
-          processing.delete(slot);
-        },
-      });
+    // Read the active slot's live input for the claw drive loop.
+    if (activeSlot && allSlots[activeSlot]?.input) {
+      activeInput = {
+        left: !!allSlots[activeSlot].input.left,
+        right: !!allSlots[activeSlot].input.right,
+        up: !!allSlots[activeSlot].input.up,
+        down: !!allSlots[activeSlot].input.down,
+      };
+    }
+
+    // Handle extract action for the active slot only.
+    if (activeSlot && !extracting) {
+      const cur = allSlots[activeSlot];
+      if (cur && cur.action === 'extract') {
+        extracting = true;
+        clearSlotAction(activeSlot).catch(() => {});
+
+        const fragment = rollFragment();
+        chamber.runExtract({
+          fragment,
+          onComplete: async () => {
+            try {
+              await pushResult(activeSlot, fragment);
+            } catch (err) {
+              console.error('[screen] pushResult failed', err);
+            }
+            extracting = false;
+            // After this extract, advance the turn to the next connected slot.
+            const next = pickNextActiveSlot();
+            if (next !== activeSlot) setActiveSlot(next).catch(() => {});
+          },
+        });
+      }
     }
   });
 
-  console.log('[screen] Firebase wiring active');
+  // Drive the chamber claw at ~60Hz from the latest known input.
+  let last = performance.now();
+  function driveLoop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    if (!chamber.isExtracting()) chamber.applyInput(activeInput, dt);
+    requestAnimationFrame(driveLoop);
+  }
+  requestAnimationFrame(driveLoop);
+
+  console.log('[screen] Firebase wiring active (single-claw turn rotation)');
 } else {
   console.warn('[screen] Firebase not configured — chamber will be idle');
 }

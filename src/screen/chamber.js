@@ -396,6 +396,39 @@ export function createChamber({ width, height, container }) {
   pulley.position.set(0, cableTopY, 0);
   cabinetGroup.add(pulley);
 
+  // ---- Real-time claw control (driven from controller inputs) ----------
+  // Bounds keep the claw inside the chamber walls with margin for the scoop.
+  const CLAW_X_MIN = -(CAB.innerW / 2) + claw.R + 0.15;
+  const CLAW_X_MAX = +(CAB.innerW / 2) - claw.R - 0.15;
+  const CLAW_Z_MIN = -(CAB.innerD / 2) + claw.R + 0.15;
+  const CLAW_Z_MAX = +(CAB.innerD / 2) - claw.R - 0.15;
+  let clawTargetX = 0;
+  let clawTargetZ = 0;
+
+  function setClawTarget(x, z) {
+    clawTargetX = Math.max(CLAW_X_MIN, Math.min(CLAW_X_MAX, x));
+    clawTargetZ = Math.max(CLAW_Z_MIN, Math.min(CLAW_Z_MAX, z));
+  }
+
+  // Apply a velocity-based nudge from held inputs. `dt` in seconds.
+  const CLAW_SPEED = 3.2; // chamber units per second
+  function applyInput({ left, right, up, down }, dt) {
+    if (left)  clawTargetX -= CLAW_SPEED * dt;
+    if (right) clawTargetX += CLAW_SPEED * dt;
+    if (up)    clawTargetZ -= CLAW_SPEED * dt; // toward back of chamber
+    if (down)  clawTargetZ += CLAW_SPEED * dt;
+    clawTargetX = Math.max(CLAW_X_MIN, Math.min(CLAW_X_MAX, clawTargetX));
+    clawTargetZ = Math.max(CLAW_Z_MIN, Math.min(CLAW_Z_MAX, clawTargetZ));
+  }
+
+  function getClawPosition() {
+    return {
+      x: claw.group.position.x,
+      y: claw.group.position.y,
+      z: claw.group.position.z,
+    };
+  }
+
   // ---- Extract animation state machine ---------------------------------
   // Idle Y: where the claw rests. Grab Y: just above the pile top.
   const IDLE_Y = innerTopY - 1.4;
@@ -414,13 +447,24 @@ export function createChamber({ width, height, container }) {
 
   function runExtract({ fragment, onComplete } = {}) {
     if (extractAnim) return false; // already busy
-    // Pick a rock from the top of the pile so the grab looks plausible.
-    const sorted = rocks.slice().sort((a, b) => b.body.position.y - a.body.position.y);
-    const candidates = sorted.slice(0, Math.min(8, sorted.length));
+    // Snapshot the X/Z where the player aimed the claw — the extract animation
+    // descends straight down here, so it grabs whatever's underneath.
+    const grabX = claw.group.position.x;
+    const grabZ = claw.group.position.z;
+
+    // Pick the topmost rock close to the claw's X/Z so the grab looks plausible.
+    const candidates = rocks
+      .slice()
+      .sort((a, b) => {
+        const da = Math.hypot(a.body.position.x - grabX, a.body.position.z - grabZ);
+        const db = Math.hypot(b.body.position.x - grabX, b.body.position.z - grabZ);
+        // Weight by distance and inverse height so close + high rocks win.
+        return (da - (a.body.position.y * 0.2)) - (db - (b.body.position.y * 0.2));
+      })
+      .slice(0, 6);
     const targetRock = candidates[Math.floor(Math.random() * candidates.length)];
 
     if (targetRock) {
-      // Freeze the rock so we can move it manually during carry.
       targetRock.body.type = CANNON.Body.KINEMATIC;
       targetRock.body.velocity.set(0, 0, 0);
       targetRock.body.angularVelocity.set(0, 0, 0);
@@ -433,6 +477,8 @@ export function createChamber({ width, height, container }) {
       fragment,
       onComplete,
       released: false,
+      grabX,
+      grabZ,
     };
     return true;
   }
@@ -446,7 +492,8 @@ export function createChamber({ width, height, container }) {
     switch (e.phase) {
       case 'descend': {
         claw.group.position.y = lerp(IDLE_Y, GRAB_Y, easeInOut(p));
-        claw.group.position.x = 0;
+        claw.group.position.x = e.grabX;
+        claw.group.position.z = e.grabZ;
         claw.setJawOpen(easeOut(p)); // open as we descend
         if (p >= 1) advance(t, 'close');
         break;
@@ -463,12 +510,16 @@ export function createChamber({ width, height, container }) {
       }
       case 'ascend': {
         claw.group.position.y = lerp(GRAB_Y, IDLE_Y, easeInOut(p));
+        claw.group.position.x = e.grabX;
+        claw.group.position.z = e.grabZ;
         if (e.targetRock) attachRockToClaw(e.targetRock, 1);
         if (p >= 1) advance(t, 'deliver');
         break;
       }
       case 'deliver': {
         claw.group.position.y = lerp(IDLE_Y, DELIVER_Y, easeInOut(p));
+        claw.group.position.x = lerp(e.grabX, 0, easeInOut(p)); // drift back to center
+        claw.group.position.z = lerp(e.grabZ, 0, easeInOut(p));
         if (e.targetRock) attachRockToClaw(e.targetRock, 1);
         if (p >= 1) advance(t, 'release');
         break;
@@ -553,10 +604,11 @@ export function createChamber({ width, height, container }) {
     if (extractAnim) {
       updateExtract(t);
     } else {
-      // Idle claw sway (only when not extracting)
-      claw.group.position.x = Math.sin(t * 0.6) * 0.08;
+      // Player-driven idle: ease claw toward target X/Z continuously.
+      claw.group.position.x += (clawTargetX - claw.group.position.x) * Math.min(1, 10 * dt);
+      claw.group.position.z += (clawTargetZ - claw.group.position.z) * Math.min(1, 10 * dt);
       claw.group.position.y = IDLE_Y;
-      claw.group.rotation.y = Math.sin(t * 0.4) * 0.05;
+      claw.group.rotation.y = Math.sin(t * 0.4) * 0.03; // tiny passive sway
     }
 
     // Cable follows the claw shackle position
@@ -580,6 +632,9 @@ export function createChamber({ width, height, container }) {
 
   return {
     runExtract,
+    setClawTarget,
+    applyInput,
+    getClawPosition,
     isExtracting: () => !!extractAnim,
     dispose() {
       cancelAnimationFrame(rafId);

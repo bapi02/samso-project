@@ -94,6 +94,41 @@ export function writeSlotAction(slot, action) {
   });
 }
 
+// Controller-side: write the held-button input state (real-time claw control).
+// `input` should be { up, down, left, right } as booleans.
+export function writeSlotInput(slot, input) {
+  const db = getDb();
+  return set(ref(db, `${slotPath(slot)}/input`), {
+    up: !!input.up,
+    down: !!input.down,
+    left: !!input.left,
+    right: !!input.right,
+  });
+}
+
+// Screen-side: subscribe to a single slot's input field only — cheaper than
+// re-reading the whole slot on every keypress.
+export function subscribeSlotInput(slot, cb) {
+  const db = getDb();
+  return onValue(ref(db, `${slotPath(slot)}/input`), (snap) => {
+    cb(snap.val() || { up: false, down: false, left: false, right: false });
+  });
+}
+
+// ---- Active slot (whose turn it is) -----------------------------------
+// Only one slot can drive the claw at a time. The screen owns this state.
+export function subscribeActiveSlot(cb) {
+  const db = getDb();
+  return onValue(ref(db, `rooms/${ROOM_ID}/activeSlot`), (snap) => {
+    cb(snap.val() ?? null);
+  });
+}
+
+export function setActiveSlot(slot) {
+  const db = getDb();
+  return set(ref(db, `rooms/${ROOM_ID}/activeSlot`), slot);
+}
+
 // Screen-side: clear the action after handling.
 export function clearSlotAction(slot) {
   const db = getDb();

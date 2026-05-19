@@ -16,6 +16,7 @@ export const FRAGMENTS = {
     goods: 'NEXIS 파편 캐리어 샤쉐',
     color: '#9ccfff',
     accent: '#4dd0ff',
+    image: '/assets/fragments/A.png',
   },
   B: {
     id: 'B',
@@ -25,6 +26,7 @@ export const FRAGMENTS = {
     goods: 'NEXTIS LAB 스티커팩',
     color: '#a4f0c2',
     accent: '#5ee090',
+    image: '/assets/fragments/B.png',
   },
   C: {
     id: 'C',
@@ -34,6 +36,7 @@ export const FRAGMENTS = {
     goods: 'NEXIS 파편 러기지택',
     color: '#e0b8ff',
     accent: '#c97aff',
+    image: '/assets/fragments/C.png',
   },
   D: {
     id: 'D',
@@ -43,6 +46,7 @@ export const FRAGMENTS = {
     goods: 'NEXTIS LAB 스케일 스트랩',
     color: '#ffd06a',
     accent: '#ffaa1a',
+    image: '/assets/fragments/D.png',
   },
 };
 

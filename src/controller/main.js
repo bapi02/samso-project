@@ -1,6 +1,6 @@
-// Mobile controller — runs on the player's phone at "/play".
-// Step 3: full UI states wired against mock data. Step 4 swaps mock for
-// Firebase RTDB; step 5 wires the extract action + result popup.
+// Mobile controller (/play) — sci-fi HUD landscape layout.
+// Real-time D-pad drives the claw on the screen; A button triggers extract.
+// Reference: "Samsonite" gamepad screenshots.
 
 import { FRAGMENTS, getFragment } from '../shared/goods.js';
 import { isFirebaseConfigured, ensureUserId } from '../shared/firebase.js';
@@ -10,7 +10,9 @@ import {
   setupSlotDisconnect,
   releaseSlot,
   writeSlotAction,
+  writeSlotInput,
   subscribeSlot,
+  subscribeActiveSlot,
   SLOT_COUNT,
 } from '../shared/slots.js';
 import { fetchResult } from '../shared/results.js';
@@ -19,28 +21,173 @@ const root = document.getElementById('controller-root');
 root.style.cssText = `
   position:fixed; inset:0;
   background:
-    radial-gradient(ellipse at 50% 22%, #142647 0%, #06101f 55%, #02060e 100%),
-    #02060e;
-  color:#dceaff;
+    radial-gradient(ellipse at 50% 50%, #0e2042 0%, #050d1c 60%, #02050d 100%),
+    #02050d;
+  color:#cdebff;
   font-family: 'JetBrains Mono', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   overflow:hidden;
   user-select:none;
   -webkit-tap-highlight-color: transparent;
+  touch-action: none;
 `;
 
+// ---- Orientation gate --------------------------------------------------
+const rotateHint = document.createElement('div');
+rotateHint.style.cssText = `
+  position:absolute; inset:0;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:24px; padding:24px; text-align:center;
+  background:rgba(2,5,13,0.95);
+  z-index: 50;
+`;
+rotateHint.innerHTML = `
+  <div style="font-size:64px; opacity:0.9;">⟲</div>
+  <div style="font-size:18px; letter-spacing:4px; color:#9be8ff;">화면을 가로로<br/>돌려주세요</div>
+  <div style="font-size:11px; letter-spacing:3px; opacity:0.5;">LANDSCAPE REQUIRED</div>
+`;
+root.appendChild(rotateHint);
+
+function syncOrientation() {
+  const portrait = window.innerWidth < window.innerHeight;
+  rotateHint.style.display = portrait ? 'flex' : 'none';
+}
+syncOrientation();
+window.addEventListener('resize', syncOrientation);
+window.addEventListener('orientationchange', syncOrientation);
+
+// ---- Main HUD shell ----------------------------------------------------
+const hud = document.createElement('div');
+hud.style.cssText = `
+  position:absolute; inset:0;
+  display:grid;
+  grid-template-columns: 1fr 2fr 1fr;
+  align-items:center;
+  padding: 18px 24px;
+`;
+root.appendChild(hud);
+
+// HUD corner brackets (sci-fi frame)
+hud.appendChild(makeCornerBrackets());
+
+// --- Left column: D-pad
+const leftCol = document.createElement('div');
+leftCol.style.cssText = `
+  display:flex; align-items:center; justify-content:center;
+`;
+hud.appendChild(leftCol);
+
+const dpad = document.createElement('div');
+dpad.style.cssText = `
+  position:relative;
+  width: 200px; height: 200px;
+`;
+leftCol.appendChild(dpad);
+
+const btnUp    = makePadButton('▲', { left: '50%', top: '0',     transform: 'translateX(-50%)' });
+const btnLeft  = makePadButton('◀', { left: '0',   top: '50%',   transform: 'translateY(-50%)' });
+const btnRight = makePadButton('▶', { right:'0',   top: '50%',   transform: 'translateY(-50%)' });
+dpad.appendChild(btnUp.el);
+dpad.appendChild(btnLeft.el);
+dpad.appendChild(btnRight.el);
+
+// Center decorative hex hub
+const hubHex = document.createElement('div');
+hubHex.style.cssText = `
+  position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+  width:54px; height:54px;
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+  background:rgba(77,208,255,0.10);
+  border: 1px solid rgba(77,208,255,0.35);
+`;
+dpad.appendChild(hubHex);
+
+// --- Center column: branding / status / result frame
+const centerCol = document.createElement('div');
+centerCol.style.cssText = `
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; gap:8px;
+  position: relative;
+`;
+hud.appendChild(centerCol);
+
+const centerStatus = document.createElement('div');
+centerStatus.style.cssText = `
+  font-size:11px; letter-spacing:5px; opacity:0.5; color:#9be8ff;
+`;
+centerCol.appendChild(centerStatus);
+
+const centerTitle = document.createElement('div');
+centerTitle.style.cssText = `
+  font-size:28px; font-weight:700; letter-spacing:8px;
+  color:#cdebff;
+  text-shadow: 0 0 18px rgba(77,208,255,0.55);
+`;
+centerCol.appendChild(centerTitle);
+
+const centerSub = document.createElement('div');
+centerSub.style.cssText = `
+  font-size:11px; letter-spacing:2px; opacity:0.55;
+`;
+centerCol.appendChild(centerSub);
+
+// --- Right column: A button
+const rightCol = document.createElement('div');
+rightCol.style.cssText = `
+  display:flex; align-items:center; justify-content:center;
+`;
+hud.appendChild(rightCol);
+
+const btnA = makeActionButton('A');
+rightCol.appendChild(btnA.el);
+
+// ---- Top bar: SLOT badge + signal indicator ----------------------------
+const topBar = document.createElement('div');
+topBar.style.cssText = `
+  position:absolute; top:14px; left:0; right:0;
+  display:flex; justify-content:center; align-items:center; gap:14px;
+  pointer-events: none;
+`;
+root.appendChild(topBar);
+
+const slotBadge = document.createElement('div');
+slotBadge.style.cssText = `
+  font-size:11px; letter-spacing:5px;
+  padding:5px 14px;
+  background:rgba(77,208,255,0.08);
+  border:1px solid rgba(77,208,255,0.45);
+  border-radius:999px;
+  color:#9be8ff;
+`;
+topBar.appendChild(slotBadge);
+
+// Bottom hint bar
+const bottomBar = document.createElement('div');
+bottomBar.style.cssText = `
+  position:absolute; bottom:10px; left:0; right:0;
+  text-align:center;
+  font-size:9px; letter-spacing:4px; opacity:0.45;
+`;
+bottomBar.textContent = 'NEXTIS LAB · DIGITAL FRAGMENT EXTRACTOR';
+root.appendChild(bottomBar);
+
+// ---- Result overlay (Image 1 reference) -------------------------------
+const resultOverlay = document.createElement('div');
+resultOverlay.style.cssText = `
+  position:absolute; inset:0;
+  display:none;
+  align-items:center; justify-content:center;
+  background:radial-gradient(ellipse at 50% 50%, rgba(14,32,66,0.92), rgba(2,5,13,0.96));
+  z-index: 20;
+  padding: 18px 80px;
+`;
+root.appendChild(resultOverlay);
+
 // ---- State machine -----------------------------------------------------
-// 'connecting'   — booting up, looking for a slot
-// 'full'         — all 4 slots taken, waiting screen
-// 'idle'         — slot assigned, big buttons enabled
-// 'extracting'   — button pressed, claw is working (buttons disabled)
-// 'result'       — fragment received, popup visible
-// 'disconnected' — connection lost
 const state = {
-  status: 'connecting',
-  slot: 0,                   // 1..4
-  totalSlots: 4,
-  occupiedSlots: 0,
-  result: null,              // FRAGMENTS entry when status='result'
+  status: 'connecting', // connecting | queued | idle | extracting | result | full | disconnected
+  slot: 0,
+  isActive: false,      // is this controller the one driving the claw?
+  result: null,
 };
 
 function setState(patch) {
@@ -48,297 +195,351 @@ function setState(patch) {
   render();
 }
 
-// ---- Layout shell ------------------------------------------------------
-const shell = document.createElement('div');
-shell.style.cssText = `
-  position:absolute; inset:0;
-  display:flex; flex-direction:column;
-  padding: max(env(safe-area-inset-top), 12px) 16px max(env(safe-area-inset-bottom), 24px);
-`;
-root.appendChild(shell);
-
-// Header
-const header = document.createElement('div');
-header.style.cssText = `
-  flex: 0 0 auto;
-  display:flex; align-items:center; justify-content:space-between;
-  padding: 8px 4px 16px;
-`;
-shell.appendChild(header);
-
-const slotBadge = document.createElement('div');
-slotBadge.style.cssText = `
-  display:inline-flex; align-items:center; gap:8px;
-  padding:8px 14px;
-  background:rgba(77,208,255,0.08);
-  border:1px solid rgba(77,208,255,0.45);
-  border-radius:999px;
-  font-size:13px; letter-spacing:3px;
-  color:#9be8ff;
-`;
-header.appendChild(slotBadge);
-
-const wordmark = document.createElement('div');
-wordmark.style.cssText = `
-  font-size:15px; letter-spacing:5px; font-weight:600;
-  background:linear-gradient(90deg,#4dd2ff,#d966ff,#ffa64d);
-  -webkit-background-clip:text; background-clip:text; color:transparent;
-`;
-wordmark.textContent = 'NEXTIS LAB';
-header.appendChild(wordmark);
-
-// Main panel (status / instruction)
-const main = document.createElement('div');
-main.style.cssText = `
-  flex: 1 1 auto;
-  display:flex; flex-direction:column;
-  align-items:center; justify-content:center;
-  gap:18px; text-align:center;
-  padding: 8px;
-`;
-shell.appendChild(main);
-
-const statusGlyph = document.createElement('div');
-statusGlyph.style.cssText = `
-  width:120px; height:120px; border-radius:50%;
-  display:flex; align-items:center; justify-content:center;
-  font-size:48px;
-  background:radial-gradient(circle, rgba(77,208,255,0.18), rgba(77,208,255,0));
-  border:1.5px solid rgba(77,208,255,0.55);
-  box-shadow:
-    0 0 0 6px rgba(77,208,255,0.06),
-    0 0 40px rgba(77,208,255,0.30);
-  transition: all 0.3s ease;
-`;
-main.appendChild(statusGlyph);
-
-const statusTitle = document.createElement('div');
-statusTitle.style.cssText = `
-  font-size:28px; font-weight:600; letter-spacing:3px;
-  color:#ffffff;
-`;
-main.appendChild(statusTitle);
-
-const statusSub = document.createElement('div');
-statusSub.style.cssText = `
-  font-size:13px; letter-spacing:2px; line-height:1.6;
-  color:#9aa8d8; opacity:0.85;
-  max-width: 280px;
-`;
-main.appendChild(statusSub);
-
-// Footer (two extract buttons)
-const footer = document.createElement('div');
-footer.style.cssText = `
-  flex: 0 0 auto;
-  display:flex; gap:18px; justify-content:space-between; align-items:center;
-  padding: 12px 4px;
-`;
-shell.appendChild(footer);
-
-const btnL = makeExtractButton('LEFT');
-const btnR = makeExtractButton('RIGHT');
-footer.appendChild(btnL.el);
-footer.appendChild(btnR.el);
-
-// Result popup (overlay)
-const popup = document.createElement('div');
-popup.style.cssText = `
-  position:absolute; inset:0;
-  display:none;
-  align-items:center; justify-content:center;
-  padding: 24px;
-  background:rgba(2,6,14,0.85);
-  backdrop-filter: blur(8px);
-  z-index: 10;
-`;
-root.appendChild(popup);
-
-const popupCard = document.createElement('div');
-popupCard.style.cssText = `
-  width:100%; max-width:340px;
-  padding:28px 24px 24px;
-  background:rgba(10,20,40,0.95);
-  border:1.5px solid rgba(77,208,255,0.55);
-  border-radius:22px;
-  text-align:center;
-  box-shadow:
-    0 0 0 1px rgba(77,208,255,0.18),
-    0 12px 60px rgba(77,208,255,0.3),
-    0 0 100px rgba(217,102,255,0.18);
-`;
-popup.appendChild(popupCard);
-
-// ---- Renderer ----------------------------------------------------------
 function render() {
-  // Header
-  if (state.status === 'connecting' || state.status === 'full') {
-    slotBadge.textContent = state.status === 'full' ? '만석' : '연결 중';
-    slotBadge.style.borderColor = 'rgba(255,200,77,0.6)';
-    slotBadge.style.color = '#ffcf7a';
-    slotBadge.style.background = 'rgba(255,200,77,0.08)';
+  // Slot badge
+  if (state.status === 'connecting') {
+    slotBadge.textContent = 'CONNECTING';
+  } else if (state.status === 'full') {
+    slotBadge.textContent = 'ALL SLOTS BUSY';
   } else if (state.status === 'disconnected') {
-    slotBadge.textContent = '연결 끊김';
-    slotBadge.style.borderColor = 'rgba(255,100,100,0.7)';
-    slotBadge.style.color = '#ff9999';
-    slotBadge.style.background = 'rgba(255,80,80,0.10)';
-  } else {
-    slotBadge.textContent = `SLOT ${state.slot}/${state.totalSlots}`;
-    slotBadge.style.borderColor = 'rgba(77,208,255,0.45)';
-    slotBadge.style.color = '#9be8ff';
-    slotBadge.style.background = 'rgba(77,208,255,0.08)';
+    slotBadge.textContent = 'DISCONNECTED';
+  } else if (state.slot) {
+    slotBadge.textContent = `SLOT ${state.slot}/${SLOT_COUNT}`;
   }
 
-  // Main panel
+  // Center text
   switch (state.status) {
     case 'connecting':
-      statusGlyph.textContent = '◌';
-      statusGlyph.style.animation = 'spin 1.6s linear infinite';
-      statusTitle.textContent = '연결 중';
-      statusSub.textContent = '슬롯을 배정받는 중입니다…';
+      centerStatus.textContent = 'STATUS';
+      centerTitle.textContent = '연결 중';
+      centerSub.textContent = '슬롯 배정 중…';
       break;
     case 'full':
-      statusGlyph.textContent = '⏳';
-      statusGlyph.style.animation = 'none';
-      statusTitle.textContent = '대기 중';
-      statusSub.textContent = '4개 슬롯이 모두 사용 중입니다.\n자리가 나면 자동으로 입장됩니다.';
+      centerStatus.textContent = 'WAITING';
+      centerTitle.textContent = '대기 중';
+      centerSub.textContent = '잠시 후 자동으로 입장됩니다';
+      break;
+    case 'queued':
+      centerStatus.textContent = `SLOT ${state.slot}`;
+      centerTitle.textContent = '내 차례 대기';
+      centerSub.textContent = '앞 사용자가 끝나면 자동으로 시작됩니다';
       break;
     case 'idle':
-      statusGlyph.textContent = '◆';
-      statusGlyph.style.animation = 'pulse 1.8s ease-in-out infinite';
-      statusTitle.textContent = '준비 완료';
-      statusSub.textContent = '아래 버튼 중 아무거나 눌러\n파편을 뽑아보세요.';
+      centerStatus.textContent = 'CONTROL · ACTIVE';
+      centerTitle.innerHTML = `<span style="
+        background:linear-gradient(90deg,#9be8ff,#d966ff,#ffa64d);
+        -webkit-background-clip:text; background-clip:text; color:transparent;
+      ">Samsonite</span>`;
+      centerSub.textContent = '◀ ▶ 로 갈고리 조준 · A 버튼으로 뽑기';
       break;
     case 'extracting':
-      statusGlyph.textContent = '✦';
-      statusGlyph.style.animation = 'spin 1s linear infinite';
-      statusTitle.textContent = '뽑는 중…';
-      statusSub.textContent = '갈고리가 파편을 가져오는 중입니다.';
+      centerStatus.textContent = 'EXTRACTING';
+      centerTitle.textContent = '뽑는 중…';
+      centerSub.textContent = '갈고리가 파편을 가져오는 중';
       break;
     case 'result':
-      statusGlyph.textContent = '✓';
-      statusGlyph.style.animation = 'none';
-      statusTitle.textContent = '획득 완료';
-      statusSub.textContent = '결과를 확인해주세요.';
+      // Hidden — result overlay covers it
       break;
     case 'disconnected':
-      statusGlyph.textContent = '⨯';
-      statusGlyph.style.animation = 'none';
-      statusTitle.textContent = '연결 끊김';
-      statusSub.textContent = '페이지를 새로고침해주세요.';
+      centerStatus.textContent = 'ERROR';
+      centerTitle.textContent = '연결 끊김';
+      centerSub.textContent = '페이지를 새로고침해주세요';
       break;
   }
 
-  // Buttons
-  const canExtract = state.status === 'idle';
-  btnL.setEnabled(canExtract);
-  btnR.setEnabled(canExtract);
+  // Button enable state — only when this controller is the active slot
+  const canControl = state.status === 'idle';
+  btnUp.setEnabled(canControl);
+  btnLeft.setEnabled(canControl);
+  btnRight.setEnabled(canControl);
+  btnA.setEnabled(canControl);
 
-  // Popup
+  // Result overlay
   if (state.status === 'result' && state.result) {
-    showPopup(state.result);
+    showResultOverlay(state.result);
   } else {
-    popup.style.display = 'none';
+    resultOverlay.style.display = 'none';
   }
 }
 
-function showPopup(fragment) {
-  popupCard.innerHTML = `
-    <div style="font-size:11px; letter-spacing:6px; color:#9aa8d8; margin-bottom:10px;">
-      FRAGMENT EXTRACTED
-    </div>
-    <div style="
-      width:140px; height:140px; margin:0 auto 18px;
-      border-radius:24px;
-      background:linear-gradient(135deg, ${fragment.color} 0%, ${fragment.accent} 100%);
-      box-shadow:
-        0 0 0 4px rgba(255,255,255,0.08),
-        0 12px 40px ${fragment.accent}88,
-        inset 0 0 30px rgba(255,255,255,0.18);
-      display:flex; align-items:center; justify-content:center;
-      font-size:64px; font-weight:800; color:#fff;
-      text-shadow: 0 2px 12px rgba(0,0,0,0.4);
-    ">${fragment.id}</div>
-    <div style="
-      font-size:13px; letter-spacing:4px; color:${fragment.accent};
-      margin-bottom:6px;
-    ">${fragment.label.toUpperCase()} · ${fragment.rarity.toUpperCase()}</div>
-    <div style="
-      font-size:22px; font-weight:700; color:#ffffff;
-      margin-bottom:18px; line-height:1.3;
-    ">${fragment.goods}</div>
-    <div style="
-      padding:12px 16px;
-      background:rgba(77,208,255,0.08);
-      border:1px solid rgba(77,208,255,0.35);
-      border-radius:12px;
-      font-size:12px; letter-spacing:1.5px; line-height:1.6;
-      color:#cdebff;
-    ">스태프에게 이 화면을 보여주고<br/>굿즈를 수령해주세요</div>
-    <button id="popup-close" style="
-      margin-top:18px;
-      padding:12px 32px;
-      background:transparent;
-      border:1px solid rgba(77,208,255,0.45);
-      border-radius:999px;
-      color:#9be8ff; font-size:13px; letter-spacing:3px;
-      font-family:inherit;
-      cursor:pointer;
-    ">닫기</button>
+// ---- Result overlay rendering -----------------------------------------
+function showResultOverlay(fragment) {
+  resultOverlay.innerHTML = '';
+
+  const frame = document.createElement('div');
+  frame.style.cssText = `
+    position:relative;
+    width:100%; max-width:560px; height: calc(100% - 36px);
+    padding: 32px 28px 24px;
+    border:1.5px solid rgba(77,208,255,0.6);
+    background:rgba(10,26,52,0.7);
+    border-radius:18px;
+    box-shadow:
+      0 0 0 1px rgba(77,208,255,0.15),
+      0 0 80px rgba(77,208,255,0.30);
+    display:flex; flex-direction:column; align-items:center; justify-content:space-between;
   `;
-  popup.style.display = 'flex';
-  popupCard.querySelector('#popup-close').onclick = () => {
-    // back to idle for the next extraction
+
+  // Corner brackets
+  ['tl','tr','bl','br'].forEach((corner) => {
+    const c = document.createElement('div');
+    const sz = 22;
+    c.style.cssText = `
+      position:absolute; width:${sz}px; height:${sz}px;
+      border:2px solid #4dd0ff;
+      ${corner.includes('t') ? 'top:-2px' : 'bottom:-2px'};
+      ${corner.includes('l') ? 'left:-2px' : 'right:-2px'};
+      ${corner.includes('t') ? 'border-bottom:none' : 'border-top:none'};
+      ${corner.includes('l') ? 'border-right:none' : 'border-left:none'};
+    `;
+    frame.appendChild(c);
+  });
+
+  const title = document.createElement('div');
+  title.style.cssText = `
+    font-size:20px; letter-spacing:8px; font-weight:700;
+    color:#9be8ff;
+    text-shadow: 0 0 18px rgba(77,208,255,0.7);
+  `;
+  title.textContent = '파편 획득 성공';
+  frame.appendChild(title);
+
+  // Rock photo (user-supplied PNG per type)
+  const rock = document.createElement('img');
+  rock.src = fragment.image;
+  rock.alt = `${fragment.id} 타입 파편`;
+  rock.style.cssText = `
+    flex: 1 1 auto;
+    max-height: 55%; max-width: 80%;
+    object-fit: contain;
+    margin: 6px 0;
+    filter: drop-shadow(0 8px 24px ${fragment.accent}55) drop-shadow(0 0 40px ${fragment.accent}33);
+  `;
+  frame.appendChild(rock);
+
+  // Type label
+  const typeLabel = document.createElement('div');
+  typeLabel.style.cssText = `
+    font-size:22px; letter-spacing:6px; font-weight:700;
+    color:${fragment.accent};
+    text-shadow: 0 0 16px ${fragment.accent}88;
+  `;
+  typeLabel.textContent = `${fragment.id}타입`;
+  frame.appendChild(typeLabel);
+
+  // Goods name
+  const goodsName = document.createElement('div');
+  goodsName.style.cssText = `
+    font-size:13px; letter-spacing:2px; opacity:0.85;
+    color:#cdebff; margin-top:6px;
+  `;
+  goodsName.textContent = fragment.goods;
+  frame.appendChild(goodsName);
+
+  // Footer status bar
+  const footer = document.createElement('div');
+  footer.style.cssText = `
+    margin-top: 10px;
+    font-size:10px; letter-spacing:4px; opacity:0.5; color:#9be8ff;
+  `;
+  footer.textContent = '스태프에게 화면을 보여주세요';
+  frame.appendChild(footer);
+
+  resultOverlay.appendChild(frame);
+  resultOverlay.style.display = 'flex';
+
+  // Auto-dismiss after 12s, or tap to dismiss earlier
+  let dismissed = false;
+  const dismiss = () => {
+    if (dismissed) return;
+    dismissed = true;
     setState({ status: 'idle', result: null });
   };
+  resultOverlay.onclick = dismiss;
+  setTimeout(dismiss, 12000);
 }
 
-// ---- Helpers -----------------------------------------------------------
-function makeExtractButton(label) {
+// SVG rock illustration — stylized polygonal rock with type color
+function makeRockIllustration(fragment) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = `display:flex; align-items:center; justify-content:center;`;
+  wrap.innerHTML = `
+    <svg viewBox="0 0 240 150" width="220" height="138" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="rock-grad-${fragment.id}" x1="20%" y1="0%" x2="80%" y2="100%">
+          <stop offset="0%" stop-color="${shadeColor(fragment.color, 22)}"/>
+          <stop offset="55%" stop-color="${fragment.color}"/>
+          <stop offset="100%" stop-color="${shadeColor(fragment.color, -32)}"/>
+        </linearGradient>
+        <filter id="rock-glow-${fragment.id}" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="6" result="g"/>
+          <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <!-- Soft glow under the rock -->
+      <ellipse cx="120" cy="130" rx="80" ry="10" fill="${fragment.accent}" opacity="0.18"/>
+      <!-- Main rock body -->
+      <polygon
+        points="35,80 60,40 95,28 140,30 180,42 205,68 210,98 188,120 145,128 95,124 55,112 32,98"
+        fill="url(#rock-grad-${fragment.id})"
+        stroke="${shadeColor(fragment.color, -48)}"
+        stroke-width="2"
+        stroke-linejoin="round"
+        filter="url(#rock-glow-${fragment.id})"
+      />
+      <!-- Top facet highlight -->
+      <polygon
+        points="60,40 95,28 140,30 130,55 95,58 70,55"
+        fill="${shadeColor(fragment.color, 32)}"
+        opacity="0.55"
+      />
+      <!-- Side facet shadow -->
+      <polygon
+        points="140,30 180,42 205,68 188,90 158,76 145,52"
+        fill="${shadeColor(fragment.color, -22)}"
+        opacity="0.7"
+      />
+      <!-- Crack lines -->
+      <path d="M 80,95 L 110,88 L 138,98 L 155,90" stroke="${shadeColor(fragment.color, -60)}" stroke-width="1.2" fill="none" opacity="0.55"/>
+      <path d="M 90,55 L 105,75 L 130,80" stroke="${shadeColor(fragment.color, -60)}" stroke-width="1" fill="none" opacity="0.4"/>
+    </svg>
+  `;
+  return wrap;
+}
+
+function shadeColor(hex, percent) {
+  // Lighten (+) or darken (-) a #rrggbb color by `percent` (0..100 typical).
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n >> 16) & 0xff;
+  let g = (n >> 8) & 0xff;
+  let b = n & 0xff;
+  const t = percent < 0 ? 0 : 255;
+  const p = Math.abs(percent) / 100;
+  r = Math.round((t - r) * p + r);
+  g = Math.round((t - g) * p + g);
+  b = Math.round((t - b) * p + b);
+  return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+}
+
+// ---- Pad / action button factories ------------------------------------
+function makePadButton(glyph, posStyles) {
+  const el = document.createElement('button');
+  const styles = Object.entries(posStyles)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(';');
+  el.style.cssText = `
+    position:absolute; ${styles};
+    width:64px; height:64px;
+    background:rgba(10,26,52,0.7);
+    border:1.5px solid rgba(77,208,255,0.55);
+    color:#9be8ff;
+    font-size:22px;
+    clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+    box-shadow:
+      0 0 0 4px rgba(77,208,255,0.08),
+      0 0 18px rgba(77,208,255,0.30);
+    cursor:pointer;
+    font-family:inherit;
+    -webkit-tap-highlight-color:transparent;
+    transition: transform 0.08s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+  `;
+  el.textContent = glyph;
+
+  let held = false;
+  function press() {
+    if (el.disabled) return;
+    held = true;
+    el.style.transform = (posStyles.transform || '') + ' scale(0.92)';
+    el.style.boxShadow = '0 0 0 4px rgba(77,208,255,0.20), 0 0 28px rgba(77,208,255,0.7)';
+    el.style.background = 'rgba(77,208,255,0.25)';
+    el.dispatchEvent(new CustomEvent('press'));
+  }
+  function release() {
+    if (!held) return;
+    held = false;
+    el.style.transform = posStyles.transform || '';
+    el.style.boxShadow = '0 0 0 4px rgba(77,208,255,0.08), 0 0 18px rgba(77,208,255,0.30)';
+    el.style.background = 'rgba(10,26,52,0.7)';
+    el.dispatchEvent(new CustomEvent('release'));
+  }
+  el.addEventListener('touchstart', (e) => { e.preventDefault(); press(); }, { passive: false });
+  el.addEventListener('touchend',   (e) => { e.preventDefault(); release(); }, { passive: false });
+  el.addEventListener('touchcancel', release);
+  el.addEventListener('mousedown', press);
+  el.addEventListener('mouseup', release);
+  el.addEventListener('mouseleave', release);
+
+  function setEnabled(enabled) {
+    el.disabled = !enabled;
+    el.style.opacity = enabled ? '1' : '0.35';
+    el.style.cursor = enabled ? 'pointer' : 'not-allowed';
+  }
+  setEnabled(false);
+
+  return { el, setEnabled, isHeld: () => held };
+}
+
+function makeActionButton(label) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = `position:relative; width:148px; height:148px; display:flex; align-items:center; justify-content:center;`;
+
+  // Outer hex bezel
+  const bezel = document.createElement('div');
+  bezel.style.cssText = `
+    position:absolute; inset:0;
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    background:rgba(77,208,255,0.08);
+    border:1px solid rgba(77,208,255,0.45);
+  `;
+  wrap.appendChild(bezel);
+
+  // Tick marks (A on top etc — purely decorative letters around the bezel)
+  const ticks = document.createElement('div');
+  ticks.style.cssText = `
+    position:absolute; inset:14px;
+    font-size:9px; letter-spacing:2px; color:#9be8ff; opacity:0.55;
+  `;
+  ticks.innerHTML = `
+    <div style="position:absolute; top:0; left:50%; transform:translateX(-50%);">${label}</div>
+  `;
+  wrap.appendChild(ticks);
+
   const el = document.createElement('button');
   el.style.cssText = `
-    flex: 1 1 0;
-    height: 160px;
-    border:none; outline:none;
-    border-radius: 28px;
-    background:
-      radial-gradient(circle at 50% 30%, rgba(77,208,255,0.42), rgba(77,208,255,0.10) 60%, rgba(77,208,255,0.02) 100%),
-      rgba(10,20,40,0.85);
-    color:#ffffff;
-    font-family: inherit;
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: 5px;
-    cursor:pointer;
-    -webkit-tap-highlight-color: transparent;
+    width:96px; height:96px; border-radius:50%;
+    background: radial-gradient(circle at 50% 35%, rgba(77,208,255,0.55), rgba(77,208,255,0.15) 60%, rgba(77,208,255,0.02) 100%), rgba(10,26,52,0.7);
+    border:1.5px solid rgba(77,208,255,0.7);
+    color:#cdebff;
+    font-family:inherit;
+    font-size:32px;
+    font-weight:700;
     box-shadow:
-      0 0 0 1.5px rgba(77,208,255,0.55),
-      0 0 0 4px rgba(77,208,255,0.10),
-      0 14px 36px rgba(77,208,255,0.32),
-      inset 0 1px 0 rgba(255,255,255,0.20);
-    transition: transform 0.08s ease, opacity 0.2s ease, box-shadow 0.2s ease;
+      0 0 0 1px rgba(77,208,255,0.30),
+      0 0 32px rgba(77,208,255,0.45),
+      inset 0 1px 0 rgba(255,255,255,0.18);
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+    transition: transform 0.08s ease, box-shadow 0.2s ease, opacity 0.2s ease;
   `;
-  el.innerHTML = `
-    <div style="font-size:11px; opacity:0.7; letter-spacing:6px; margin-bottom:4px;">${label}</div>
-    <div>뽑기</div>
-  `;
+  el.textContent = label;
+  wrap.appendChild(el);
 
   let pressed = false;
   function press() {
     if (el.disabled) return;
     pressed = true;
-    el.style.transform = 'scale(0.96)';
-    el.style.boxShadow = '0 0 0 1.5px rgba(77,208,255,0.85), 0 0 0 4px rgba(77,208,255,0.18), 0 6px 18px rgba(77,208,255,0.4), inset 0 2px 6px rgba(0,0,0,0.25)';
+    el.style.transform = 'scale(0.93)';
+    el.style.boxShadow = '0 0 0 2px rgba(77,208,255,0.6), 0 0 36px rgba(77,208,255,0.8), inset 0 2px 8px rgba(0,0,0,0.3)';
   }
   function release() {
     if (!pressed) return;
     pressed = false;
     el.style.transform = '';
-    el.style.boxShadow = '0 0 0 1.5px rgba(77,208,255,0.55), 0 0 0 4px rgba(77,208,255,0.10), 0 14px 36px rgba(77,208,255,0.32), inset 0 1px 0 rgba(255,255,255,0.20)';
-    if (!el.disabled) onExtract();
+    el.style.boxShadow = '0 0 0 1px rgba(77,208,255,0.30), 0 0 32px rgba(77,208,255,0.45), inset 0 1px 0 rgba(255,255,255,0.18)';
+    if (!el.disabled) el.dispatchEvent(new CustomEvent('action'));
   }
   el.addEventListener('touchstart', (e) => { e.preventDefault(); press(); }, { passive: false });
-  el.addEventListener('touchend', (e) => { e.preventDefault(); release(); }, { passive: false });
+  el.addEventListener('touchend',   (e) => { e.preventDefault(); release(); }, { passive: false });
   el.addEventListener('touchcancel', () => { pressed = false; el.style.transform = ''; });
   el.addEventListener('mousedown', press);
   el.addEventListener('mouseup', release);
@@ -351,53 +552,72 @@ function makeExtractButton(label) {
   }
   setEnabled(false);
 
-  return { el, setEnabled };
+  return { el: wrap, btn: el, setEnabled, isPressed: () => pressed };
 }
 
-// ---- Extract flow -----------------------------------------------------
-// Real mode: writes action='extract' to the slot. The screen consumes the
-// action, plays the chamber animation, rolls the fragment, pushes a result,
-// then updates the slot's `lastResultId`. Our subscribeSlot listener picks
-// that up and transitions us to 'result'.
-//
-// Mock mode (no Firebase config) keeps the original timer-based flow so
-// the page is still demoable.
-function onExtract() {
+function makeCornerBrackets() {
+  const w = document.createElement('div');
+  w.style.cssText = `position:absolute; inset:14px; pointer-events:none;`;
+  ['tl','tr','bl','br'].forEach((corner) => {
+    const c = document.createElement('div');
+    c.style.cssText = `
+      position:absolute; width:18px; height:18px;
+      border:1.5px solid rgba(77,208,255,0.5);
+      ${corner.includes('t') ? 'top:0' : 'bottom:0'};
+      ${corner.includes('l') ? 'left:0' : 'right:0'};
+      ${corner.includes('t') ? 'border-bottom:none' : 'border-top:none'};
+      ${corner.includes('l') ? 'border-right:none' : 'border-left:none'};
+    `;
+    w.appendChild(c);
+  });
+  return w;
+}
+
+// ---- Input wiring ------------------------------------------------------
+const localInput = { up: false, down: false, left: false, right: false };
+let pendingInputWrite = null;
+const INPUT_FLUSH_MS = 50; // throttle bursts; on change still fires fast
+
+function pushInput() {
+  if (!firebaseMode || !state.slot) return;
+  if (pendingInputWrite) clearTimeout(pendingInputWrite);
+  pendingInputWrite = setTimeout(() => {
+    pendingInputWrite = null;
+    writeSlotInput(state.slot, localInput).catch(() => {});
+  }, INPUT_FLUSH_MS);
+}
+
+btnUp.el.addEventListener('press',   () => { localInput.up = true; pushInput(); });
+btnUp.el.addEventListener('release', () => { localInput.up = false; pushInput(); });
+btnLeft.el.addEventListener('press',   () => { localInput.left = true; pushInput(); });
+btnLeft.el.addEventListener('release', () => { localInput.left = false; pushInput(); });
+btnRight.el.addEventListener('press',   () => { localInput.right = true; pushInput(); });
+btnRight.el.addEventListener('release', () => { localInput.right = false; pushInput(); });
+btnA.btn.addEventListener('action', () => onActionButton());
+
+function onActionButton() {
   if (state.status !== 'idle') return;
   setState({ status: 'extracting' });
-
   if (firebaseMode && state.slot) {
     writeSlotAction(state.slot, 'extract').catch((err) => {
       console.error('[controller] writeSlotAction failed', err);
       setState({ status: 'idle' });
     });
-    return;
+  } else {
+    // Mock fallback for dev
+    setTimeout(() => {
+      import('../shared/goods.js').then(({ rollFragment }) => {
+        setState({ status: 'result', result: rollFragment() });
+      });
+    }, 2400);
   }
-
-  // Mock fallback for when Firebase isn't configured yet.
-  setTimeout(() => {
-    import('../shared/goods.js').then(({ rollFragment }) => {
-      const fragment = rollFragment();
-      setState({ status: 'result', result: fragment });
-    });
-  }, 2400);
 }
-
-// ---- CSS keyframes (injected once) ------------------------------------
-const styleEl = document.createElement('style');
-styleEl.textContent = `
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes pulse {
-    0%, 100% { transform: scale(1); box-shadow: 0 0 0 6px rgba(77,208,255,0.06), 0 0 40px rgba(77,208,255,0.30); }
-    50%      { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(77,208,255,0.10), 0 0 60px rgba(77,208,255,0.45); }
-  }
-`;
-document.head.appendChild(styleEl);
 
 // ---- Boot --------------------------------------------------------------
 const firebaseMode = isFirebaseConfigured();
 let stopHeartbeat = null;
 let unsubscribeSlot = null;
+let unsubscribeActive = null;
 let lastResultSeen = null;
 
 render();
@@ -408,9 +628,8 @@ if (firebaseMode) {
     setState({ status: 'disconnected' });
   });
 } else {
-  // Mock fallback for dev when env vars aren't set yet
   setTimeout(() => {
-    setState({ status: 'idle', slot: 2, totalSlots: SLOT_COUNT, occupiedSlots: 2 });
+    setState({ status: 'idle', slot: 2 });
   }, 900);
   console.warn('[controller] Firebase not configured — running in MOCK mode');
 }
@@ -420,21 +639,32 @@ async function boot() {
   const claim = await claimFirstFreeSlot(userId);
 
   if (!claim) {
-    setState({ status: 'full', slot: 0, totalSlots: SLOT_COUNT });
-    // Poll every 4s to try again
+    setState({ status: 'full' });
     setTimeout(() => boot().catch(() => {}), 4000);
     return;
   }
 
   const { slot } = claim;
-  setState({ status: 'idle', slot, totalSlots: SLOT_COUNT });
 
   stopHeartbeat = startHeartbeat(slot);
   await setupSlotDisconnect(slot);
 
+  // Watch the active slot pointer — go between 'idle' (when active) and 'queued' (when not).
+  unsubscribeActive = subscribeActiveSlot((active) => {
+    const isActive = active === slot;
+    if (state.status === 'result' || state.status === 'extracting') {
+      // Don't yank the user out of a result; advance after dismiss.
+      return;
+    }
+    setState({
+      slot,
+      isActive,
+      status: isActive ? 'idle' : 'queued',
+    });
+  });
+
   unsubscribeSlot = subscribeSlot(slot, async (slotData) => {
     if (!slotData) return;
-    // Watch for a new result tagged to this slot
     if (slotData.lastResultId && slotData.lastResultId !== lastResultSeen) {
       lastResultSeen = slotData.lastResultId;
       const result = await fetchResult(slotData.lastResultId);
@@ -446,11 +676,11 @@ async function boot() {
   });
 }
 
-// Release on tab close as a courtesy — onDisconnect handles the network case.
 window.addEventListener('pagehide', () => {
   if (state.slot) releaseSlot(state.slot).catch(() => {});
   if (stopHeartbeat) stopHeartbeat();
   if (unsubscribeSlot) unsubscribeSlot();
+  if (unsubscribeActive) unsubscribeActive();
 });
 
 console.log('[controller] mounted', { firebaseMode, state });
